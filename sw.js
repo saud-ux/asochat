@@ -59,7 +59,7 @@ self.addEventListener('push', function(event) {
         dir: 'rtl',
         lang: 'ar',
         vibrate: [200, 100, 200],
-        tag: 'chat-' + (data.title || 'msg'),
+        tag: data.msgId ? ('msg-' + data.msgId) : ('chat-' + (data.title || 'msg')),
         renotify: true,
         requireInteraction: false,
         actions: [
