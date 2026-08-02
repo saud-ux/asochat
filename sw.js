@@ -1,4 +1,4 @@
-var CACHE_VERSION = 'v36';
+var CACHE_VERSION = 'v38';
 
 self.addEventListener('install', function(event) {
   self.skipWaiting();
@@ -34,6 +34,11 @@ self.addEventListener('fetch', function(event) {
   );
 });
 
+function normalizePath(p) {
+  var s = (p || '/').replace(/\/+$/, '');
+  return s || '/';
+}
+
 self.addEventListener('push', function(event) {
   var data = { title: 'رسالة جديدة', body: '' };
   if (event.data) {
@@ -46,12 +51,64 @@ self.addEventListener('push', function(event) {
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function(clientList) {
+
+      if (data.type === 'call') {
+        return self.registration.showNotification('📞 مكالمة واردة', {
+          body: data.body,
+          icon: '/icon-192.svg',
+          badge: '/icon-192.svg',
+          dir: 'rtl',
+          lang: 'ar',
+          tag: 'incoming-call',
+          renotify: true,
+          requireInteraction: true,
+          vibrate: [1000, 500, 1000, 500, 1000, 500, 1000, 500, 1000],
+          silent: false,
+          actions: [
+            { action: 'answer', title: '📞 رد' },
+            { action: 'reject', title: '❌ رفض' }
+          ],
+          data: { url: data.url || '/', type: 'call', callId: data.callId || '' }
+        });
+      }
+
+      if (data.type === 'alert') {
+        return self.registration.showNotification('🚨 تنبيه طارئ!', {
+          body: data.body,
+          icon: '/icon-192.svg',
+          badge: '/icon-192.svg',
+          dir: 'rtl',
+          lang: 'ar',
+          tag: 'emergency-alert',
+          renotify: true,
+          requireInteraction: true,
+          vibrate: [500, 200, 500, 200, 500, 200, 500, 200, 500, 200, 500, 200, 500],
+          silent: false,
+          actions: [
+            { action: 'open', title: '🚨 افتح الآن' }
+          ],
+          data: { url: data.url || '/', type: 'alert' }
+        });
+      }
+
       var targetUrl = data.url || '/';
-      for (var i = 0; i < clientList.length; i++) {
-        if (clientList[i].visibilityState === 'visible' && clientList[i].url.indexOf(targetUrl) !== -1) {
-          return;
+      var targetPath;
+      try { targetPath = normalizePath(new URL(targetUrl, self.location.origin).pathname); }
+      catch(e) { targetPath = normalizePath(targetUrl); }
+
+      if (targetPath !== '/') {
+        for (var i = 0; i < clientList.length; i++) {
+          if (clientList[i].visibilityState === 'visible') {
+            var cp;
+            try { cp = normalizePath(new URL(clientList[i].url).pathname); }
+            catch(e) { cp = ''; }
+            if (cp === targetPath) return;
+          }
         }
       }
+
+      var tag = 'msg-' + (data.msgId || (Date.now() + '-' + Math.random().toString(36).slice(2, 8)));
+
       return self.registration.showNotification(data.title, {
         body: data.body,
         icon: '/icon-192.svg',
@@ -59,7 +116,7 @@ self.addEventListener('push', function(event) {
         dir: 'rtl',
         lang: 'ar',
         vibrate: [200, 100, 200],
-        tag: 'chat-' + (data.title || 'msg'),
+        tag: tag,
         renotify: true,
         requireInteraction: false,
         actions: [
@@ -77,7 +134,20 @@ self.addEventListener('notificationclick', function(event) {
 
   if (event.action === 'dismiss') return;
 
-  var targetUrl = event.notification.data && event.notification.data.url ? event.notification.data.url : '/';
+  var notifData = event.notification.data || {};
+
+  if (event.action === 'reject' && notifData.callId) {
+    event.waitUntil(
+      fetch('https://chat-app-75b2a-default-rtdb.firebaseio.com/calls/' + notifData.callId + '/status.json', {
+        method: 'PUT',
+        body: JSON.stringify('rejected'),
+        headers: { 'Content-Type': 'application/json' }
+      })
+    );
+    return;
+  }
+
+  var targetUrl = notifData.url || '/';
 
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function(clientList) {
