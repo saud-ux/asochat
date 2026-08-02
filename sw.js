@@ -1,4 +1,4 @@
-var CACHE_VERSION = 'v37';
+var CACHE_VERSION = 'v36';
 
 self.addEventListener('install', function(event) {
   self.skipWaiting();
@@ -59,7 +59,7 @@ self.addEventListener('push', function(event) {
         dir: 'rtl',
         lang: 'ar',
         vibrate: [200, 100, 200],
-        tag: data.msgId ? ('msg-' + data.msgId) : ('chat-' + (data.title || 'msg')),
+        tag: 'chat-' + (data.title || 'msg'),
         renotify: true,
         requireInteraction: false,
         actions: [

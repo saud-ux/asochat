@@ -87,6 +87,10 @@
     let currentAudioBtn = null;
     let activeListeners = [];
     let totalUnread = { w: 0, aseel: 0, 'w-aseel': 0 };
+    let chatCardState = {};
+    let partnerLastActive = {};
+    let lastActiveRefreshTimer = null;
+    let chatPartnerLastActiveTs = 0;
     let isFirstLoad = {};
     let pinnedToBottom = false;
     let audioCtx = null;
@@ -106,6 +110,21 @@
     let requestLoadOlder = null; // fetches the previous page of older messages for the open chat
     let activeGameRef = null;
     let activeGameCb = null;
+    let callPc = null;
+    let callStream = null;
+    let callTimerInterval = null;
+    let callStartTime = 0;
+    let currentCallId = null;
+    let isInCall = false;
+    let isCaller = false;
+    let callTimeoutTimer = null;
+    let callRingtoneStop = null;
+    let alertSoundStop = null;
+    let incomingCallRef = null;
+    let callStatusRef = null;
+    let isMuted = false;
+    let callDebounce = false;
+    let alertDebounce = false;
 
     /* ==========================================================
        DOM REFERENCES
@@ -263,6 +282,7 @@
       if (currentChatId && currentUser && db) {
         db.ref(`chats/${currentChatId}/typing/${currentUser}`).remove();
       }
+      if (isInCall) cleanupCall();
       stopPresence();
       clearTimeout(typingTimer);
       clearInterval(typingCheckInterval);
@@ -277,6 +297,7 @@
       currentUser = null;
       myMessages = [];
       otherSeenTimestamp = 0;
+      chatPartnerLastActiveTs = 0;
       editingKey = null;
       replyToKey = null;
       replyToMsg = null;
@@ -355,41 +376,89 @@
         card.className = 'chat-card';
         card.id = `card-${partnerId}`;
         card.onclick = (e) => navigate(chatPath(partnerId), e);
+        const showLastActive = APP_USER === 'saud';
         card.innerHTML = `
           <div class="chat-avatar" style="background:${CONTACTS[partnerId].color}">
             ${AVATARS[partnerId]}
           </div>
           <div class="chat-info">
             <div class="chat-name">
-              <span>${CONTACTS[partnerId].name}</span>
+              <span class="chat-name-row">
+                <span>${CONTACTS[partnerId].name}</span>
+                ${showLastActive ? `<span class="chat-last-active" id="last-active-${partnerId}"></span>` : ''}
+              </span>
               <span class="chat-time" id="time-${chatId}"></span>
             </div>
             <div class="chat-preview-row">
-              <span class="chat-preview" id="preview-${chatId}">لا توجد رسائل</span>
+              <span class="chat-preview" id="preview-${chatId}">
+                <span class="chat-status" id="status-${chatId}"></span><span class="chat-preview-text" id="preview-text-${chatId}">لا توجد رسائل</span>
+              </span>
               <span class="unread-badge hidden" id="badge-${chatId}">0</span>
             </div>
           </div>`;
         list.appendChild(card);
+
+        const cardState = { lastMsg: null, partnerSeen: 0 };
+        chatCardState[chatId] = cardState;
+
+        const renderStatus = () => {
+          const el = $(`status-${chatId}`);
+          if (!el) return;
+          const m = cardState.lastMsg;
+          if (!m || m.sender !== homeUser) {
+            el.className = 'chat-status';
+            el.innerHTML = '';
+            return;
+          }
+          const seen = cardState.partnerSeen && m.timestamp <= cardState.partnerSeen;
+          el.className = 'chat-status' + (seen ? ' seen' : '');
+          el.innerHTML = seen ? TICK_DOUBLE : TICK_SINGLE;
+        };
 
         const msgRef = db.ref(`chats/${chatId}/messages`).orderByChild('timestamp').limitToLast(1);
         addListener(msgRef, 'value', snap => {
           let lastMsg = null;
           snap.forEach(child => { lastMsg = child.val(); });
           if (lastMsg) {
-            const previewEl = $(`preview-${chatId}`);
+            cardState.lastMsg = lastMsg;
+            const textEl = $(`preview-text-${chatId}`);
             const timeEl = $(`time-${chatId}`);
-            if (previewEl) previewEl.textContent = msgPreview(lastMsg);
+            if (textEl) textEl.textContent = msgPreview(lastMsg);
             if (timeEl) timeEl.textContent = formatRelative(lastMsg.timestamp);
+            renderStatus();
           }
         });
 
+        const seenRef = db.ref(`chats/${chatId}/seen/${partnerId}`);
+        addListener(seenRef, 'value', snap => {
+          cardState.partnerSeen = snap.val() || 0;
+          renderStatus();
+          if (showLastActive) renderLastActive(partnerId);
+        });
+
+        if (showLastActive) {
+          const laRef = db.ref(`users/${partnerId}/lastActive`);
+          addListener(laRef, 'value', snap => {
+            partnerLastActive[partnerId] = snap.val() || 0;
+            renderLastActive(partnerId);
+          });
+        }
+
         updateUnreadForChat(chatId, homeUser);
       });
+
+      if (APP_USER === 'saud') {
+        clearInterval(lastActiveRefreshTimer);
+        lastActiveRefreshTimer = setInterval(() => {
+          chatPartners.forEach(pid => renderLastActive(pid));
+        }, 30000);
+      }
 
       showNotifFirstTime();
       updateNotifToggle();
       requestNotifPermission();
       listenForHomeNotifications(homeUser, chatPartners);
+      processPendingPushes();
     }
 
     function updateUnreadForChat(chatId, user) {
@@ -451,13 +520,37 @@
       });
     }
 
+    function renderLastActive(partnerId) {
+      const el = document.getElementById(`last-active-${partnerId}`);
+      if (!el) return;
+      const chatId = getChatId(homeUser, partnerId);
+      const fallback = (chatCardState[chatId] && chatCardState[chatId].partnerSeen) || 0;
+      const ts = Math.max(partnerLastActive[partnerId] || 0, fallback);
+      if (!ts) { el.textContent = ''; el.classList.remove('is-online'); return; }
+      const diff = Date.now() - ts;
+      if (diff < 90000) {
+        el.textContent = '● نشط الآن';
+        el.classList.add('is-online');
+      } else {
+        el.textContent = 'آخر نشاط ' + formatRelative(ts);
+        el.classList.remove('is-online');
+      }
+    }
+
     function msgPreview(msg) {
+      if (msg.deleted) {
+        if (APP_USER !== 'saud' || !msg.content) return '🚫 رسالة محذوفة';
+      }
       if (msg.type === 'image') return '📷 صورة';
       if (msg.type === 'gif') return '🎞️ GIF';
       if (msg.type === 'video') return '🎥 فيديو';
       if (msg.type === 'audio') return '🎤 رسالة صوتية';
       if (msg.type === 'game') return msg.game === 'rps' ? '🎮 حجرة ورقة مقص' : msg.game === 'c4' ? '🎮 أربعة في خط' : msg.game === 'guess' ? '🎮 خمّن الرقم' : msg.game === 'twenty' ? '🎮 الرقم ٢٠' : '🎮 لعبة إكس أو';
-      return msg.content.length > 50 ? msg.content.substring(0, 50) + '...' : msg.content;
+      if (msg.type === 'alert') return '🚨 يبيك ضروري!';
+      if (msg.type === 'system') return msg.content;
+      const prefix = msg.deleted ? '🚫 ' : '';
+      const body = msg.content.length > 50 ? msg.content.substring(0, 50) + '...' : msg.content;
+      return prefix + body;
     }
 
     /* ==========================================================
@@ -490,6 +583,9 @@
           <span class="chat-header-status" id="chat-header-status"></span>
         </div>
         <div class="header-actions">
+          ${chatId !== 'w-aseel' ? `<button class="header-action-btn header-call-btn" onclick="startCall()" aria-label="اتصال"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/></svg></button>` : ''}
+          ${chatId !== 'w-aseel' ? `<button class="header-action-btn header-endcall-btn" id="header-endcall-btn" onclick="endCall()" aria-label="قطع المكالمة" style="display:none"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08a.956.956 0 010-1.36C3.55 8.6 7.55 7 12 7s8.45 1.6 11.71 4.72c.18.18.29.44.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.11-.7-.28a11.27 11.27 0 00-2.67-1.85.996.996 0 01-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg></button>` : ''}
+          <button class="header-action-btn header-alert-btn" onclick="sendEmergencyAlert()" aria-label="يبيك ضروري"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></button>
           <button class="header-action-btn" onclick="goToGamesPage()" aria-label="لعبة"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="11" x2="10" y2="11"/><line x1="8" y1="9" x2="8" y2="13"/><line x1="15" y1="12" x2="15.01" y2="12"/><line x1="18" y1="10" x2="18.01" y2="10"/><path d="M17.32 5H6.68a4 4 0 00-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 003 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 019.828 16h4.344a2 2 0 011.414.586L17 18c.5.5 1 1 2 1a3 3 0 003-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0017.32 5z"/></svg></button>
           <button class="header-action-btn" onclick="toggleSearch()" aria-label="بحث"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></button>
           <button class="header-action-btn" id="btn-theme" onclick="toggleTheme()" aria-label="الوضع">${isDark ? sunSvg : moonSvg}</button>
@@ -832,6 +928,12 @@
         refreshPresenceView(); // "online" is derived from a fresh seen heartbeat
       });
 
+      const partnerLastActiveRef = db.ref(`users/${partnerId}/lastActive`);
+      addListener(partnerLastActiveRef, 'value', snap => {
+        chatPartnerLastActiveTs = snap.val() || 0;
+        refreshPresenceView();
+      });
+
       // Typing indicator listener
       const otherTypingRef = db.ref(`chats/${chatId}/typing/${otherUser}`);
       addListener(otherTypingRef, 'value', snap => {
@@ -1159,6 +1261,13 @@
         alert('التسجيل الصوتي غير مدعوم على هذا المتصفح.');
         return;
       }
+      if (currentAudioEl) {
+        try { currentAudioEl.pause(); } catch (_) {}
+        if (currentAudioEl._cleanup) currentAudioEl._cleanup();
+        resetAudioBtn(currentAudioBtn);
+        currentAudioEl = null;
+        currentAudioBtn = null;
+      }
       clearTimeout(micReleaseTimer);
       let stream;
       try {
@@ -1468,24 +1577,31 @@
     }
 
     function createSpeakerAudio(src) {
-      const el = document.createElement('video');
+      const el = document.createElement('audio');
       el.setAttribute('playsinline', '');
-      el.setAttribute('webkit-playsinline', '');
       el.crossOrigin = 'anonymous';
       el.preload = 'auto';
       el.volume = 1.0;
       el.muted = false;
-      el.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:0;height:0;opacity:0;pointer-events:none;';
       el.src = src;
+      el.style.cssText = 'position:fixed;top:-9999px;left:-9999px;';
       document.body.appendChild(el);
 
       try {
         const ctx = getSpeakerCtx();
         const source = ctx.createMediaElementSource(el);
+        const compressor = ctx.createDynamicsCompressor();
+        compressor.threshold.value = -30;
+        compressor.knee.value = 20;
+        compressor.ratio.value = 8;
+        compressor.attack.value = 0.003;
+        compressor.release.value = 0.15;
         const gain = ctx.createGain();
-        gain.gain.value = 2.0;
-        source.connect(gain);
+        gain.gain.value = 4.0;
+        source.connect(compressor);
+        compressor.connect(gain);
         gain.connect(ctx.destination);
+        el._compressor = compressor;
         el._gainNode = gain;
         el._audioSource = source;
       } catch(e) {}
@@ -1496,6 +1612,7 @@
           el.src = '';
           el.load();
           if (el._audioSource) { el._audioSource.disconnect(); el._audioSource = null; }
+          if (el._compressor) { el._compressor.disconnect(); el._compressor = null; }
           if (el._gainNode) { el._gainNode.disconnect(); el._gainNode = null; }
           el.remove();
         } catch(e) {}
@@ -1541,16 +1658,41 @@
       audio.play().catch(() => {});
     }
 
+    function ensureAudioPlaying(wrap) {
+      if (currentAudioEl && currentAudioBtn && currentAudioBtn.closest('.msg-audio') === wrap) return true;
+      const btn = wrap.querySelector('.audio-play');
+      if (btn) { toggleAudioPlay(btn); return true; }
+      return false;
+    }
+
     function seekAudio(e, wave) {
       const wrap = wave.closest('.msg-audio');
-      if (!wrap || !currentAudioEl || !currentAudioBtn || currentAudioBtn.closest('.msg-audio') !== wrap) return;
+      if (!wrap) return;
+      if (!ensureAudioPlaying(wrap)) return;
       const storedDur = parseFloat(wrap.getAttribute('data-dur')) || 0;
       const d = (currentAudioEl.duration && isFinite(currentAudioEl.duration)) ? currentAudioEl.duration : storedDur;
       if (!d) return;
       const rect = wave.getBoundingClientRect();
-      let ratio = (rect.right - e.clientX) / rect.width;
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      let ratio = (rect.right - clientX) / rect.width;
       ratio = Math.max(0, Math.min(1, ratio));
       currentAudioEl.currentTime = ratio * d;
+      paintWavePlayed(wrap, ratio);
+    }
+
+    function initWaveTouch(wave) {
+      let dragging = false;
+      wave.addEventListener('touchstart', (e) => {
+        dragging = true;
+        seekAudio(e, wave);
+      }, { passive: true });
+      wave.addEventListener('touchmove', (e) => {
+        if (!dragging) return;
+        e.preventDefault();
+        seekAudio(e, wave);
+      }, { passive: false });
+      wave.addEventListener('touchend', () => { dragging = false; });
+      wave.addEventListener('touchcancel', () => { dragging = false; });
     }
 
     function compressImageToDataUrl(file, maxWidth = 1280) {
@@ -1785,9 +1927,9 @@
       if (currentView === 'chat' && currentChatId === chatId && !document.hidden) return;
       showToast(chatId, title, body);
       playSound();
-      if ('Notification' in window && Notification.permission === 'granted' && document.hidden) {
-        try { new Notification(title, { body, icon: '/icon-192.svg' }); } catch(e) {}
-      }
+      // OS-level notifications go through the service worker's push handler.
+      // The in-page Notification API is unreliable on mobile and duplicated the
+      // SW notification, so it was removed here.
     }
 
     let toastTimer = null;
@@ -1864,6 +2006,8 @@
 
       const recipientUrl = partnerId === 'saud' ? `/chat/${chatId}` : `/${partnerId}/chat/${currentUser === 'saud' ? 'saud' : (chatId === 'w-aseel' ? (partnerId === 'w' ? 'aseel' : 'w') : 'saud')}`;
 
+      // Stable per-message id so a retry (from the sender or a pending-push
+      // drain by another client) doesn't stack two notifications on the phone.
       const msgId = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
 
       db.ref(`push-subscriptions/${partnerId}`).once('value', snap => {
@@ -1882,6 +2026,11 @@
       });
     }
 
+    // POST the push to the netlify function with retry+backoff. If every retry
+    // fails (netlify cold-start, sender's flaky network), persist to
+    // pending-pushes so any client — including the sender's next visit or
+    // another user's browser — can drain it later. Web-push delivery inside
+    // the same msgId is idempotent on the phone (tag stays the same).
     function deliverPush(partnerId, subKey, payload, attempt) {
       attempt = attempt || 0;
       fetch('/.netlify/functions/send-push', {
@@ -1891,13 +2040,14 @@
         body: JSON.stringify(payload)
       }).then(res => {
         if (res.status === 410 || res.status === 404) {
+          // Subscription is dead — clear it AND the pending queue entry if any.
           if (partnerId && subKey) db.ref(`push-subscriptions/${partnerId}/${subKey}`).remove();
           return;
         }
         if (!res.ok) throw new Error('push status ' + res.status);
       }).catch(() => {
         if (attempt < 3) {
-          const delay = 800 * Math.pow(2, attempt);
+          const delay = 800 * Math.pow(2, attempt); // 800ms, 1.6s, 3.2s
           setTimeout(() => deliverPush(partnerId, subKey, payload, attempt + 1), delay);
         } else if (partnerId && db) {
           try {
@@ -1910,6 +2060,46 @@
         }
       });
     }
+
+    // Drain any pushes that a previous send couldn't deliver. Any online
+    // client will process the queue on load and then every 5 minutes while
+    // running. Entries older than 30 minutes are dropped so a permanent
+    // failure doesn't keep firing stale notifications.
+    let pendingDrainInFlight = false;
+
+    function processPendingPushes() {
+      if (!db || pendingDrainInFlight) return;
+      pendingDrainInFlight = true;
+      const users = ['saud', 'w', 'aseel'];
+      let remaining = users.length;
+      const done = () => { if (--remaining <= 0) pendingDrainInFlight = false; };
+      users.forEach(uid => {
+        db.ref(`pending-pushes/${uid}`).limitToFirst(20).once('value', snap => {
+          const items = [];
+          snap.forEach(c => { items.push({ ref: c.ref, val: c.val() }); });
+          if (!items.length) { done(); return; }
+          items.forEach(({ ref, val }) => {
+            if (!val || !val.payload) { ref.remove(); return; }
+            if (val.ts && (Date.now() - val.ts) > 1800000) { ref.remove(); return; }
+            fetch('/.netlify/functions/send-push', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(val.payload)
+            }).then(res => {
+              if (res.ok || res.status === 410 || res.status === 404) {
+                ref.remove();
+                if ((res.status === 410 || res.status === 404) && val.subKey) {
+                  db.ref(`push-subscriptions/${uid}/${val.subKey}`).remove();
+                }
+              }
+            }).catch(() => {});
+          });
+          done();
+        }, () => done());
+      });
+    }
+
+    setInterval(processPendingPushes, 300000);
 
     const MSG_LIMIT = 200;
     let pruneInFlight = {};
@@ -2050,8 +2240,15 @@
     ========================================================== */
     function renderMsgContent(el, msg, isMine) {
       if (msg.deleted) {
-        el.innerHTML = `<div class="msg-deleted">🚫 تم حذف هذه الرسالة</div><div class="msg-time">${formatTime(msg.timestamp)}</div>`;
-        return;
+        const canPeek = APP_USER === 'saud' && msg.content;
+        if (!canPeek) {
+          el.classList.remove('is-deleted-peek');
+          el.innerHTML = `<div class="msg-deleted">🚫 تم حذف هذه الرسالة</div><div class="msg-time">${formatTime(msg.timestamp)}</div>`;
+          return;
+        }
+        el.classList.add('is-deleted-peek');
+      } else {
+        el.classList.remove('is-deleted-peek');
       }
       let replyHtml = '';
       if (msg.replyTo) {
@@ -2075,6 +2272,13 @@
           : msg.game === 'guess' ? renderGuess(msg, el.dataset.key)
           : msg.game === 'twenty' ? renderTwenty(msg, el.dataset.key)
           : renderXO(msg, el.dataset.key);
+      } else if (msg.type === 'alert') {
+        content = `<div class="msg-text">${escapeHtml(msg.content)}</div>`;
+        el.classList.add('alert-msg');
+      } else if (msg.type === 'system') {
+        content = `<div class="msg-text">${escapeHtml(msg.content)}</div>`;
+        el.classList.add('system-msg');
+        if (msg.content && msg.content.indexOf('مكالمة فائتة') !== -1) el.classList.add('missed-call');
       } else {
         const ec = emojiOnlyCount(msg.content);
         bigEmoji = ec > 0;
@@ -2092,9 +2296,12 @@
         reactionsHtml += '</div>';
       }
       const editedTag = msg.edited ? '<span class="msg-edited">(معدّلة)</span>' : '';
-      const statusHtml = isMine ? `<span class="msg-status">${TICK_SINGLE}</span>` : '';
+      const deletedTag = msg.deleted ? '<span class="msg-deleted-tag">🚫 محذوفة</span>' : '';
+      const statusHtml = (isMine && !msg.deleted) ? `<span class="msg-status">${TICK_SINGLE}</span>` : '';
       const savedTag = (el.dataset.key && isSaved(el.dataset.key)) ? '<span class="msg-saved-star">⭐</span>' : '';
-      el.innerHTML = replyHtml + content + reactionsHtml + `<div class="msg-time">${savedTag}${editedTag}${formatTime(msg.timestamp)}${statusHtml}</div>`;
+      el.innerHTML = replyHtml + content + reactionsHtml + `<div class="msg-time">${savedTag}${deletedTag}${editedTag}${statusHtml}${formatTime(msg.timestamp)}</div>`;
+      const waveEl = el.querySelector('.audio-wave');
+      if (waveEl) initWaveTouch(waveEl);
     }
 
     /* ==========================================================
@@ -2232,7 +2439,7 @@
       hideMsgActions();
       db.ref(`chats/${currentChatId}/messages/${key}`).update({
         deleted: true,
-        content: ''
+        deletedAt: firebase.database.ServerValue.TIMESTAMP
       });
     }
 
@@ -2503,6 +2710,72 @@
             if (gp) gp.style.transform = `translateX(${offset}%)`;
           }
         }, { passive: true });
+      });
+    })();
+
+    (function setupPullToRefresh() {
+      document.addEventListener('DOMContentLoaded', () => {
+        const page = document.getElementById('swipe-page-chats');
+        const list = document.getElementById('chat-list');
+        if (!page || !list) return;
+
+        const ind = document.createElement('div');
+        ind.className = 'ptr-indicator';
+        ind.innerHTML = '<span class="ptr-arrow">↓</span>';
+        page.insertBefore(ind, page.firstChild);
+
+        const THRESHOLD = 70, MAX = 110;
+        let startY = 0, dist = 0, pulling = false, refreshing = false;
+
+        list.addEventListener('touchstart', (e) => {
+          if (refreshing) return;
+          if (currentHomePage !== 'chats') return;
+          if (e.touches.length !== 1) return;
+          if (list.scrollTop > 0) return;
+          startY = e.touches[0].clientY;
+          pulling = true;
+          dist = 0;
+        }, { passive: true });
+
+        list.addEventListener('touchmove', (e) => {
+          if (!pulling || refreshing) return;
+          const dy = e.touches[0].clientY - startY;
+          if (dy <= 0) {
+            dist = 0;
+            ind.style.transform = '';
+            ind.classList.remove('ready');
+            return;
+          }
+          dist = Math.min(MAX, dy * 0.5);
+          ind.style.transform = `translate(-50%, ${dist}px)`;
+          ind.classList.toggle('ready', dist >= THRESHOLD);
+          if (e.cancelable) e.preventDefault();
+        }, { passive: false });
+
+        function end() {
+          if (!pulling) return;
+          pulling = false;
+          if (dist >= THRESHOLD) {
+            refreshing = true;
+            ind.classList.add('spin', 'ready');
+            ind.style.transform = `translate(-50%, ${THRESHOLD}px)`;
+            try {
+              if (typeof cleanup === 'function') cleanup();
+              if (typeof showHome === 'function') showHome(homeUser);
+            } catch (_) {}
+            setTimeout(() => {
+              ind.classList.remove('spin', 'ready');
+              ind.style.transform = '';
+              refreshing = false;
+            }, 800);
+          } else {
+            ind.style.transform = '';
+            ind.classList.remove('ready');
+          }
+          dist = 0;
+        }
+        list.addEventListener('touchend', end, { passive: true });
+        list.addEventListener('touchcancel', end, { passive: true });
       });
     })();
 
@@ -3045,16 +3318,33 @@
     }
 
     function updateSeenIndicator() {
+      let lastSeenEl = null;
       myMessages.forEach(m => {
         const s = m.el.querySelector('.msg-status');
         if (!s) return;
         const seen = allForceSeen || (otherSeenTimestamp && m.timestamp <= otherSeenTimestamp);
         if (seen) {
           if (!s.classList.contains('seen')) { s.classList.add('seen'); s.innerHTML = TICK_DOUBLE; }
+          lastSeenEl = m.el;
         } else if (s.classList.contains('seen')) {
           s.classList.remove('seen'); s.innerHTML = TICK_SINGLE;
         }
+        const oldText = m.el.querySelector('.msg-seen-text');
+        if (oldText) oldText.remove();
       });
+      const oldSep = document.getElementById('seen-label');
+      if (oldSep) oldSep.remove();
+      if (lastSeenEl && otherSeenTimestamp) {
+        const timeRow = lastSeenEl.querySelector('.msg-time');
+        if (timeRow) {
+          const label = document.createElement('span');
+          label.className = 'msg-seen-text';
+          label.innerHTML = '<b class="seen-word">SEEN</b> ' + escapeHtml(formatSeenEn(otherSeenTimestamp));
+          const statusEl = timeRow.querySelector('.msg-status');
+          if (statusEl) timeRow.insertBefore(label, statusEl);
+          else timeRow.insertBefore(label, timeRow.firstChild);
+        }
+      }
     }
 
     /* ==========================================================
@@ -3115,6 +3405,20 @@
       return new Date(ts).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', hour12: true });
     }
 
+    function formatSeenEn(ts) {
+      if (!ts) return '';
+      const diff = Date.now() - ts;
+      const mins = Math.floor(diff / 60000);
+      if (mins < 1) return 'Now';
+      if (mins < 60) return mins + 'm ago';
+      const hrs = Math.floor(mins / 60);
+      if (hrs < 24) return hrs + 'h ago';
+      const days = Math.floor(hrs / 24);
+      if (days === 1) return 'yesterday';
+      if (days < 7) return days + 'd ago';
+      return new Date(ts).toLocaleDateString('en', { month: 'short', day: 'numeric' });
+    }
+
     function formatRelative(ts) {
       if (!ts) return '';
       const diff = Date.now() - ts;
@@ -3133,69 +3437,52 @@
     /* ==========================================================
        NOTIFICATION CONTROLS
     ========================================================== */
+    // Trigger the browser's NATIVE permission prompt on the first user
+    // interaction. iOS Safari requires a user gesture, so we can't ask on load.
+    // Attaching once in capture phase means the very first tap/click anywhere
+    // fires it, before it can even be handled as a normal UI interaction.
     function showNotifFirstTime() {
       if (!('Notification' in window)) return;
       if (localStorage.getItem('notif_asked')) return;
-      localStorage.setItem('notif_asked', '1');
-
-      const overlay = document.createElement('div');
-      overlay.id = 'notif-ask-overlay';
-      overlay.className = 'notif-ask-overlay';
-      overlay.innerHTML = `<div class="notif-ask-box">
-        <div class="notif-ask-icon">🔔</div>
-        <div class="notif-ask-title">تفعيل الإشعارات؟</div>
-        <div class="notif-ask-desc">عشان توصلك الرسائل أول بأول</div>
-        <div class="notif-ask-btns">
-          <button class="notif-ask-yes" onclick="notifAskYes()">تفعيل</button>
-          <button class="notif-ask-no" onclick="notifAskNo()">لا، شكراً</button>
-        </div>
-      </div>`;
-      document.body.appendChild(overlay);
-    }
-
-    function notifAskYes() {
-      const ov = document.getElementById('notif-ask-overlay');
-      if (ov) ov.remove();
-      localStorage.removeItem('notif_off');
-      Notification.requestPermission().then(perm => {
-        if (perm === 'granted') subscribePush();
-        updateNotifToggle();
-      });
-    }
-
-    function notifAskNo() {
-      const ov = document.getElementById('notif-ask-overlay');
-      if (ov) ov.remove();
-      localStorage.setItem('notif_off', '1');
-      updateNotifToggle();
+      if (Notification.permission !== 'default') {
+        localStorage.setItem('notif_asked', '1');
+        return;
+      }
+      const askOnce = () => {
+        document.removeEventListener('touchend', askOnce, true);
+        document.removeEventListener('click', askOnce, true);
+        localStorage.setItem('notif_asked', '1');
+        localStorage.removeItem('notif_off');
+        try {
+          Notification.requestPermission().then(perm => {
+            if (perm === 'granted') subscribePush();
+            updateNotifToggle();
+          });
+        } catch(e) {}
+      };
+      document.addEventListener('touchend', askOnce, true);
+      document.addEventListener('click', askOnce, true);
     }
 
     function toggleNotifications() {
-      if (localStorage.getItem('notif_off')) {
-        showNotifDialog();
+      if (!('Notification' in window)) return;
+      const isOff = !!localStorage.getItem('notif_off');
+      const perm = Notification.permission;
+      if (perm === 'default' || isOff) {
+        // Fire the native OS prompt directly — this call itself is a user
+        // gesture (the toggle button was tapped).
+        localStorage.removeItem('notif_off');
+        localStorage.setItem('notif_asked', '1');
+        try {
+          Notification.requestPermission().then(p => {
+            if (p === 'granted') subscribePush();
+            updateNotifToggle();
+          });
+        } catch(e) {}
       } else {
         localStorage.setItem('notif_off', '1');
         updateNotifToggle();
       }
-    }
-
-    function showNotifDialog() {
-      if (!('Notification' in window)) return;
-      const old = document.getElementById('notif-ask-overlay');
-      if (old) old.remove();
-      const overlay = document.createElement('div');
-      overlay.id = 'notif-ask-overlay';
-      overlay.className = 'notif-ask-overlay';
-      overlay.innerHTML = `<div class="notif-ask-box">
-        <div class="notif-ask-icon">🔔</div>
-        <div class="notif-ask-title">تفعيل الإشعارات؟</div>
-        <div class="notif-ask-desc">عشان توصلك الرسائل أول بأول</div>
-        <div class="notif-ask-btns">
-          <button class="notif-ask-yes" onclick="notifAskYes()">تفعيل</button>
-          <button class="notif-ask-no" onclick="notifAskNo()">لا، شكراً</button>
-        </div>
-      </div>`;
-      document.body.appendChild(overlay);
     }
 
     function updateNotifToggle() {
@@ -3223,6 +3510,12 @@
       if (currentView !== 'chat' && currentView !== 'person') return;
       if (document.hidden) return;
       db.ref(`chats/${currentChatId}/seen/${currentUser}`).set(firebase.database.ServerValue.TIMESTAMP);
+      markActive();
+    }
+
+    function markActive() {
+      if (!db || !APP_USER || document.hidden) return;
+      db.ref(`users/${APP_USER}/lastActive`).set(firebase.database.ServerValue.TIMESTAMP);
     }
 
     function setTyping() {
@@ -3248,10 +3541,10 @@
        PRESENCE ("in the conversation" indicator)
     ========================================================== */
     // How recent the other side's heartbeat must be to count as "online".
-    const PRESENCE_WINDOW = 20000;
+    const PRESENCE_WINDOW = 10000;
 
     // Heartbeat: while the chat is open and foregrounded, keep refreshing my own
-    // "seen" timestamp (every 15s) and re-evaluate whether the other side is
+    // "seen" timestamp (every 5s) and re-evaluate whether the other side is
     // still fresh. markSeen() already guards document.hidden and no-op cases.
     function startPresence() {
       clearInterval(presenceTimer);
@@ -3260,7 +3553,7 @@
       presenceTimer = setInterval(() => {
         markSeen();
         refreshPresenceView();
-      }, 15000);
+      }, 5000);
     }
 
     function stopPresence() {
@@ -3273,15 +3566,20 @@
     function refreshPresenceView() {
       const fresh = otherSeenTimestamp &&
         (Date.now() + serverTimeOffset - otherSeenTimestamp) < PRESENCE_WINDOW;
-      updatePresenceIndicator(!!fresh);
+      updatePresenceIndicator(!!fresh, otherSeenTimestamp);
+      updateSeenIndicator();
     }
 
-    function updatePresenceIndicator(online) {
+    function updatePresenceIndicator(online, lastSeen) {
       const dot = $('presence-dot');
       const status = $('chat-header-status');
       if (dot) dot.classList.toggle('online', !!online);
       if (status) {
-        status.textContent = online ? 'متصل الآن' : '';
+        let text = '';
+        const ts = Math.max(chatPartnerLastActiveTs || 0, lastSeen || 0);
+        if (online) text = 'متصل الآن';
+        else if (ts) text = 'Last seen ' + formatSeenEn(ts);
+        status.textContent = text;
         status.classList.toggle('online', !!online);
       }
     }
@@ -3432,6 +3730,18 @@
           else if (count >= 3) onTriple();
         }, 320);
       }
+
+      // Preserve keyboard when the message input is focused: preventing the
+      // pointer-down default stops the tap from stealing focus, so the user
+      // can double-tap-heart a message without the keyboard closing.
+      const keepInputFocus = (e) => {
+        const inp = document.getElementById('msg-input');
+        if (inp && document.activeElement === inp && e.cancelable) {
+          e.preventDefault();
+        }
+      };
+      el.addEventListener('touchstart', keepInputFocus, { passive: false });
+      el.addEventListener('mousedown', keepInputFocus);
 
       el.addEventListener('touchend', (e) => {
         lastTouch = Date.now();
@@ -3867,7 +4177,7 @@
       }
       let found = 0;
       allMsgElements.forEach(({ el, msg }) => {
-        if (msg.deleted) { el.classList.remove('search-highlight', 'search-dim'); return; }
+        if (msg.deleted && (APP_USER !== 'saud' || !msg.content)) { el.classList.remove('search-highlight', 'search-dim'); return; }
         const text = (msg.type === 'text' ? msg.content : '').toLowerCase();
         if (text.includes(query)) {
           el.classList.add('search-highlight');
@@ -3991,6 +4301,566 @@
     }
 
     /* ==========================================================
+       VOICE CALL (WebRTC)
+    ========================================================== */
+    const RTC_CONFIG = {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+      ]
+    };
+
+    const PHONE_SVG = '<svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/></svg>';
+    const ENDCALL_SVG = '<svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08a.956.956 0 010-1.36C3.55 8.6 7.55 7 12 7s8.45 1.6 11.71 4.72c.18.18.29.44.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.11-.7-.28a11.27 11.27 0 00-2.67-1.85.996.996 0 01-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg>';
+    const MIC_SVG = '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M12 15a3 3 0 003-3V6a3 3 0 00-6 0v6a3 3 0 003 3z"/><path d="M19 11a1 1 0 00-2 0 5 5 0 01-10 0 1 1 0 00-2 0 7 7 0 006 6.92V21a1 1 0 002 0v-3.08A7 7 0 0019 11z"/></svg>';
+    const MICOFF_SVG = '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M19 11a1 1 0 00-2 0c0 .9-.24 1.73-.64 2.46l1.46 1.46A6.93 6.93 0 0019 11zM12 15c.34 0 .67-.06.98-.16l-6.82-6.82A2.98 2.98 0 006 9.84V12a3 3 0 003 3h3zM4.27 3L3 4.27l6 6V12a3 3 0 004.52 2.59l1.7 1.7A6.9 6.9 0 0113 17.92V21a1 1 0 01-2 0v-3.08A7 7 0 015 11a1 1 0 00-2 0 8.96 8.96 0 003.18 6.87l-.9.9A1 1 0 005 20.5l14.73-14.73L18 4.27 14.82 7.46 12.82 5.46A3 3 0 0015 6V5.27L4.27 3z"/></svg>';
+
+    function playRingtone() {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      let stopped = false;
+      let timeouts = [];
+      function ring() {
+        if (stopped) return;
+        try {
+          const osc1 = audioCtx.createOscillator();
+          const g1 = audioCtx.createGain();
+          osc1.connect(g1); g1.connect(audioCtx.destination);
+          osc1.frequency.value = 440; osc1.type = 'sine';
+          g1.gain.value = 0.3;
+          osc1.start(); osc1.stop(audioCtx.currentTime + 0.4);
+
+          const osc2 = audioCtx.createOscillator();
+          const g2 = audioCtx.createGain();
+          osc2.connect(g2); g2.connect(audioCtx.destination);
+          osc2.frequency.value = 520; osc2.type = 'sine';
+          g2.gain.value = 0.3;
+          osc2.start(audioCtx.currentTime + 0.6);
+          osc2.stop(audioCtx.currentTime + 1.0);
+        } catch(e) {}
+        timeouts.push(setTimeout(ring, 2500));
+      }
+      ring();
+      return function() { stopped = true; timeouts.forEach(clearTimeout); };
+    }
+
+    function playAlarmSound() {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      let stopped = false;
+      let osc = null;
+      let interval = null;
+      let high = true;
+      try {
+        osc = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        osc.connect(g); g.connect(audioCtx.destination);
+        osc.type = 'square';
+        osc.frequency.value = 800;
+        g.gain.value = 0.25;
+        osc.start();
+        interval = setInterval(() => {
+          if (stopped) return;
+          high = !high;
+          osc.frequency.value = high ? 800 : 600;
+        }, 200);
+      } catch(e) {}
+      return function() {
+        stopped = true;
+        clearInterval(interval);
+        try { if (osc) osc.stop(); } catch(e) {}
+      };
+    }
+
+    function sendCallPush(receiverId, callId) {
+      const senderName = APP_USER === 'saud' ? 'سعود' : (CONTACTS[APP_USER] ? CONTACTS[APP_USER].name : APP_USER);
+      const recipientUrl = receiverId === 'saud' ? `/chat/${getChatId('saud', APP_USER)}` : `/${receiverId}/chat/${APP_USER === 'saud' ? 'saud' : (APP_USER)}`;
+
+      db.ref(`push-subscriptions/${receiverId}`).once('value', snap => {
+        const subs = snap.val();
+        if (!subs) return;
+        Object.entries(subs).forEach(([subKey, sub]) => {
+          const payload = {
+            subscription: sub,
+            title: 'مكالمة واردة',
+            body: senderName + ' يتصل بك',
+            url: recipientUrl,
+            type: 'call',
+            callId: callId
+          };
+          deliverPush(receiverId, subKey, payload, 0);
+        });
+      });
+    }
+
+    function startCall() {
+      if (callDebounce || isInCall) return;
+      if (!currentChatId || currentChatId === 'w-aseel') return;
+      if (!navigator.onLine) { showToastMsg('لا يوجد اتصال بالإنترنت'); return; }
+      if (!window.RTCPeerConnection) { showToastMsg('متصفحك لا يدعم المكالمات'); return; }
+
+      callDebounce = true;
+      setTimeout(() => { callDebounce = false; }, 2000);
+
+      const partnerId = getPartnerId(currentChatId, currentUser);
+      const callId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+      const senderName = APP_USER === 'saud' ? 'سعود' : (CONTACTS[APP_USER] ? CONTACTS[APP_USER].name : APP_USER);
+
+      db.ref(`calls/${callId}`).set({
+        callerId: APP_USER,
+        receiverId: partnerId,
+        callerName: senderName,
+        status: 'ringing',
+        timestamp: firebase.database.ServerValue.TIMESTAMP
+      });
+
+      currentCallId = callId;
+      isInCall = true;
+      isCaller = true;
+      isMuted = false;
+
+      const partnerName = CONTACTS[partnerId] ? CONTACTS[partnerId].name : partnerId;
+      const partnerColor = CONTACTS[partnerId] ? CONTACTS[partnerId].color : '#5B8FB9';
+      const partnerAvatar = AVATARS[partnerId] || '';
+      showCallingUI(partnerName, partnerColor, partnerAvatar);
+
+      sendCallPush(partnerId, callId);
+
+      callTimeoutTimer = setTimeout(() => {
+        if (currentCallId === callId && isInCall && isCaller) {
+          db.ref(`calls/${callId}/status`).set('missed');
+          db.ref(`chats/${currentChatId}/messages`).push({
+            sender: APP_USER,
+            type: 'system',
+            content: '📞 مكالمة فائتة',
+            timestamp: firebase.database.ServerValue.TIMESTAMP
+          });
+          cleanupCall();
+        }
+      }, 45000);
+
+      initCallAsCaller(callId, partnerId);
+    }
+
+    function initCallAsCaller(callId, partnerId) {
+      navigator.mediaDevices.getUserMedia({ audio: true, video: false }).then(stream => {
+        callStream = stream;
+        callPc = new RTCPeerConnection(RTC_CONFIG);
+
+        stream.getAudioTracks().forEach(track => callPc.addTrack(track, stream));
+
+        callPc.onicecandidate = e => {
+          if (e.candidate) {
+            db.ref(`calls/${callId}/callerCandidates`).push(e.candidate.toJSON());
+          }
+        };
+
+        callPc.ontrack = e => {
+          const audio = new Audio();
+          audio.srcObject = e.streams[0];
+          audio.play().catch(() => {});
+        };
+
+        callPc.createOffer().then(offer => {
+          return callPc.setLocalDescription(offer);
+        }).then(() => {
+          db.ref(`calls/${callId}/offer`).set({
+            sdp: callPc.localDescription.sdp,
+            type: callPc.localDescription.type
+          });
+        });
+
+        const ansRef = db.ref(`calls/${callId}/answer`);
+        ansRef.on('value', snap => {
+          const ans = snap.val();
+          if (ans && callPc && !callPc.currentRemoteDescription) {
+            callPc.setRemoteDescription(new RTCSessionDescription(ans));
+          }
+        });
+
+        const rcRef = db.ref(`calls/${callId}/receiverCandidates`);
+        rcRef.on('child_added', snap => {
+          const c = snap.val();
+          if (c && callPc) callPc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {});
+        });
+
+        callStatusRef = db.ref(`calls/${callId}/status`);
+        callStatusRef.on('value', snap => {
+          const st = snap.val();
+          if (st === 'answered') {
+            clearTimeout(callTimeoutTimer);
+            callStartTime = Date.now();
+            showInCallUI();
+          } else if (st === 'rejected') {
+            showToastMsg('رفض المكالمة');
+            cleanupCall();
+          } else if (st === 'ended' && isInCall) {
+            cleanupCall();
+          } else if (st === 'missed') {
+            cleanupCall();
+          }
+        });
+      }).catch(() => {
+        showToastMsg('لا يمكن الوصول للميكروفون');
+        db.ref(`calls/${callId}/status`).set('ended');
+        cleanupCall();
+      });
+    }
+
+    function answerCall(callId) {
+      if (!callId) return;
+      isInCall = true;
+      isCaller = false;
+      currentCallId = callId;
+      isMuted = false;
+
+      if (callRingtoneStop) { callRingtoneStop(); callRingtoneStop = null; }
+
+      db.ref(`calls/${callId}/status`).set('answered');
+
+      db.ref(`calls/${callId}`).once('value', snap => {
+        const call = snap.val();
+        if (!call || !call.offer) { cleanupCall(); return; }
+
+        navigator.mediaDevices.getUserMedia({ audio: true, video: false }).then(stream => {
+          callStream = stream;
+          callPc = new RTCPeerConnection(RTC_CONFIG);
+
+          stream.getAudioTracks().forEach(track => callPc.addTrack(track, stream));
+
+          callPc.onicecandidate = e => {
+            if (e.candidate) {
+              db.ref(`calls/${callId}/receiverCandidates`).push(e.candidate.toJSON());
+            }
+          };
+
+          callPc.ontrack = e => {
+            const audio = new Audio();
+            audio.srcObject = e.streams[0];
+            audio.play().catch(() => {});
+          };
+
+          callPc.setRemoteDescription(new RTCSessionDescription(call.offer)).then(() => {
+            return callPc.createAnswer();
+          }).then(answer => {
+            return callPc.setLocalDescription(answer);
+          }).then(() => {
+            db.ref(`calls/${callId}/answer`).set({
+              sdp: callPc.localDescription.sdp,
+              type: callPc.localDescription.type
+            });
+          });
+
+          const ccRef = db.ref(`calls/${callId}/callerCandidates`);
+          ccRef.on('child_added', snap => {
+            const c = snap.val();
+            if (c && callPc) callPc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {});
+          });
+
+          callStatusRef = db.ref(`calls/${callId}/status`);
+          callStatusRef.on('value', snap => {
+            const st = snap.val();
+            if (st === 'ended' && isInCall) {
+              cleanupCall();
+            }
+          });
+
+          callStartTime = Date.now();
+          showInCallUI();
+        }).catch(() => {
+          showToastMsg('لا يمكن الوصول للميكروفون');
+          db.ref(`calls/${callId}/status`).set('ended');
+          cleanupCall();
+        });
+      });
+    }
+
+    function rejectCall(callId) {
+      if (callRingtoneStop) { callRingtoneStop(); callRingtoneStop = null; }
+      db.ref(`calls/${callId}/status`).set('rejected');
+      const overlay = $('call-overlay');
+      if (overlay) overlay.style.display = 'none';
+    }
+
+    function endCall() {
+      if (currentCallId) {
+        db.ref(`calls/${currentCallId}/status`).set('ended');
+      }
+      cleanupCall();
+    }
+
+    function cleanupCall() {
+      clearTimeout(callTimeoutTimer);
+      clearInterval(callTimerInterval);
+      if (callRingtoneStop) { callRingtoneStop(); callRingtoneStop = null; }
+      if (callPc) { try { callPc.close(); } catch(e) {} callPc = null; }
+      if (callStream) { callStream.getTracks().forEach(t => t.stop()); callStream = null; }
+      if (callStatusRef) { callStatusRef.off(); callStatusRef = null; }
+
+      if (currentCallId) {
+        const cid = currentCallId;
+        setTimeout(() => { db.ref(`calls/${cid}`).remove(); }, 5000);
+      }
+
+      const overlay = $('call-overlay');
+      if (overlay) overlay.style.display = 'none';
+      const miniBar = $('call-mini-bar');
+      if (miniBar) miniBar.style.display = 'none';
+      toggleHeaderEndCall(false);
+
+      currentCallId = null;
+      isInCall = false;
+      isCaller = false;
+      callStartTime = 0;
+      isMuted = false;
+    }
+
+    function toggleHeaderEndCall(show) {
+      const btn = document.getElementById('header-endcall-btn');
+      if (btn) btn.style.display = show ? '' : 'none';
+      const callBtn = document.querySelector('.header-call-btn');
+      if (callBtn) callBtn.style.display = show ? 'none' : '';
+    }
+
+    function showCallingUI(name, color, avatar) {
+      const overlay = $('call-overlay');
+      if (!overlay) return;
+      toggleHeaderEndCall(true);
+      overlay.innerHTML = `
+        <div class="call-avatar" style="background:${color}">${avatar}</div>
+        <div class="call-name">${name}</div>
+        <div class="call-status">جاري الاتصال...</div>
+        <div class="call-actions">
+          <button class="call-btn call-btn-end" onclick="endCall()">${ENDCALL_SVG}</button>
+        </div>`;
+      overlay.style.display = 'flex';
+    }
+
+    function showIncomingCallUI(callId, callerName, callerColor, callerAvatar) {
+      if (isInCall) {
+        db.ref(`calls/${callId}/status`).set('rejected');
+        return;
+      }
+      callRingtoneStop = playRingtone();
+      const overlay = $('call-overlay');
+      if (!overlay) return;
+      overlay.innerHTML = `
+        <div class="call-avatar" style="background:${callerColor}">${callerAvatar}</div>
+        <div class="call-name">${callerName}</div>
+        <div class="call-status">مكالمة واردة...</div>
+        <div class="call-actions">
+          <button class="call-btn call-btn-answer" onclick="answerCall('${callId}')">${PHONE_SVG}</button>
+          <button class="call-btn call-btn-end" onclick="rejectCall('${callId}')">${ENDCALL_SVG}</button>
+        </div>`;
+      overlay.style.display = 'flex';
+    }
+
+    function showInCallUI() {
+      const overlay = $('call-overlay');
+      if (overlay) overlay.style.display = 'none';
+
+      if (!currentCallId) return;
+
+      db.ref(`calls/${currentCallId}`).once('value', snap => {
+        const call = snap.val();
+        if (!call) return;
+        const partnerId = call.callerId === APP_USER ? call.receiverId : call.callerId;
+        const partnerName = CONTACTS[partnerId] ? CONTACTS[partnerId].name : partnerId;
+
+        const miniBar = $('call-mini-bar');
+        if (miniBar) {
+          miniBar.innerHTML = `${PHONE_SVG} <span id="call-timer-text">00:00</span> ${partnerName}`;
+          miniBar.style.display = 'flex';
+        }
+
+        clearInterval(callTimerInterval);
+        callTimerInterval = setInterval(updateCallTimer, 1000);
+        updateCallTimer();
+
+        overlay.innerHTML = `
+          <div class="call-name">${partnerName}</div>
+          <div class="call-timer" id="call-timer-overlay">00:00</div>
+          <div class="call-actions">
+            <button class="call-btn call-btn-mute${isMuted ? ' muted' : ''}" onclick="toggleMute()">${isMuted ? MICOFF_SVG : MIC_SVG}</button>
+            <button class="call-btn call-btn-end" onclick="endCall()">${ENDCALL_SVG}</button>
+          </div>`;
+        overlay.style.display = 'none';
+      });
+    }
+
+    function toggleMute() {
+      isMuted = !isMuted;
+      if (callStream) {
+        callStream.getAudioTracks().forEach(t => { t.enabled = !isMuted; });
+      }
+      const muteBtn = document.querySelector('.call-btn-mute');
+      if (muteBtn) {
+        muteBtn.classList.toggle('muted', isMuted);
+        muteBtn.innerHTML = isMuted ? MICOFF_SVG : MIC_SVG;
+      }
+    }
+
+    function updateCallTimer() {
+      if (!callStartTime) return;
+      const elapsed = Math.floor((Date.now() - callStartTime) / 1000);
+      const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
+      const ss = String(elapsed % 60).padStart(2, '0');
+      const txt = mm + ':' + ss;
+      const timerEl = document.getElementById('call-timer-text');
+      if (timerEl) timerEl.textContent = txt;
+      const timerOv = document.getElementById('call-timer-overlay');
+      if (timerOv) timerOv.textContent = txt;
+    }
+
+    function listenForIncomingCalls() {
+      if (!db || !IS_CONFIGURED) return;
+      if (incomingCallRef) { incomingCallRef.off(); }
+      incomingCallRef = db.ref('calls').orderByChild('receiverId').equalTo(APP_USER);
+      incomingCallRef.on('child_added', snap => {
+        const call = snap.val();
+        if (!call || call.status !== 'ringing') return;
+        if (isInCall) {
+          db.ref(`calls/${snap.key}/status`).set('rejected');
+          return;
+        }
+        const callerName = call.callerName || (CONTACTS[call.callerId] ? CONTACTS[call.callerId].name : call.callerId);
+        const callerColor = CONTACTS[call.callerId] ? CONTACTS[call.callerId].color : '#5B8FB9';
+        const callerAvatar = AVATARS[call.callerId] || '';
+        showIncomingCallUI(snap.key, callerName, callerColor, callerAvatar);
+      });
+    }
+
+    function showToastMsg(text) {
+      const toast = $('toast');
+      if (!toast) return;
+      toast.innerHTML = `<div class="toast-body"><div class="toast-text">${text}</div></div>`;
+      toast.className = 'toast';
+      toast.style.display = 'block';
+      requestAnimationFrame(() => toast.classList.add('visible'));
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => {
+        toast.classList.remove('visible');
+        setTimeout(() => { toast.style.display = 'none'; }, 300);
+      }, 3000);
+    }
+
+    /* ==========================================================
+       EMERGENCY ALERT
+    ========================================================== */
+    function sendEmergencyAlert() {
+      if (alertDebounce || !currentChatId || !currentUser || !db) return;
+      alertDebounce = true;
+      setTimeout(() => { alertDebounce = false; }, 3000);
+
+      const confirmEl = document.createElement('div');
+      confirmEl.className = 'msg-actions-overlay visible';
+      confirmEl.onclick = () => confirmEl.remove();
+      confirmEl.innerHTML = `<div class="msg-actions" onclick="event.stopPropagation()" style="text-align:center;padding:24px">
+        <div style="font-size:48px;margin-bottom:12px">🚨</div>
+        <div style="font-size:18px;font-weight:700;margin-bottom:16px">يبيك ضروري؟</div>
+        <div style="display:flex;gap:12px;justify-content:center">
+          <button id="alert-confirm-btn" style="background:#e74c3c;color:#fff;border:none;border-radius:12px;padding:12px 32px;font-size:16px;font-weight:700;cursor:pointer;font-family:inherit">إرسال</button>
+          <button onclick="this.closest('.msg-actions-overlay').remove()" style="background:#eee;color:#333;border:none;border-radius:12px;padding:12px 32px;font-size:16px;cursor:pointer;font-family:inherit">إلغاء</button>
+        </div>
+      </div>`;
+      document.body.appendChild(confirmEl);
+
+      document.getElementById('alert-confirm-btn').onclick = () => {
+        confirmEl.remove();
+        doSendAlert();
+      };
+    }
+
+    function doSendAlert() {
+      const chatId = currentChatId;
+      const senderName = APP_USER === 'saud' ? 'سعود' : (CONTACTS[APP_USER] ? CONTACTS[APP_USER].name : APP_USER);
+      const alertId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+
+      db.ref(`alerts/${chatId}/${alertId}`).set({
+        sender: APP_USER,
+        status: 'active',
+        timestamp: firebase.database.ServerValue.TIMESTAMP
+      });
+
+      db.ref(`chats/${chatId}/messages`).push({
+        sender: APP_USER,
+        type: 'alert',
+        content: '🚨 يبيك ضروري!',
+        timestamp: firebase.database.ServerValue.TIMESTAMP
+      });
+
+      if (chatId === 'w-aseel') {
+        const recipients = ['w', 'aseel'].filter(u => u !== APP_USER);
+        recipients.forEach(rid => sendAlertPush(rid, senderName));
+      } else {
+        const partnerId = getPartnerId(chatId, currentUser);
+        sendAlertPush(partnerId, senderName);
+      }
+    }
+
+    function sendAlertPush(receiverId, senderName) {
+      const recipientUrl = receiverId === 'saud' ? '/' : `/${receiverId}/`;
+
+      db.ref(`push-subscriptions/${receiverId}`).once('value', snap => {
+        const subs = snap.val();
+        if (!subs) return;
+        Object.entries(subs).forEach(([subKey, sub]) => {
+          const payload = {
+            subscription: sub,
+            title: 'يبيك ضروري!',
+            body: senderName + ' يحتاجك ضروري!',
+            url: recipientUrl,
+            type: 'alert'
+          };
+          deliverPush(receiverId, subKey, payload, 0);
+        });
+      });
+    }
+
+    function checkActiveAlerts() {
+      if (!db || !IS_CONFIGURED) return;
+      const chatIds = APP_USER === 'saud' ? ['w', 'aseel', 'w-aseel'] : (APP_USER === 'w' ? ['w', 'w-aseel'] : ['aseel', 'w-aseel']);
+      chatIds.forEach(chatId => {
+        db.ref(`alerts/${chatId}`).orderByChild('status').equalTo('active').once('value', snap => {
+          const alerts = snap.val();
+          if (!alerts) return;
+          Object.entries(alerts).forEach(([alertId, alert]) => {
+            if (alert.sender !== APP_USER) {
+              showAlertOverlay(chatId, alertId, alert.sender);
+            }
+          });
+        });
+      });
+    }
+
+    function showAlertOverlay(chatId, alertId, senderId) {
+      const senderName = CONTACTS[senderId] ? CONTACTS[senderId].name : senderId;
+      alertSoundStop = playAlarmSound();
+      const overlay = $('alert-overlay');
+      if (!overlay) return;
+      overlay.innerHTML = `
+        <div class="alert-icon">⚠️</div>
+        <div class="alert-text">${senderName} يبيك ضروري!</div>
+        <button class="alert-dismiss-btn" onclick="dismissAlert('${chatId}','${alertId}')">شفت</button>`;
+      overlay.style.display = 'flex';
+    }
+
+    function dismissAlert(chatId, alertId) {
+      if (alertSoundStop) { alertSoundStop(); alertSoundStop = null; }
+      db.ref(`alerts/${chatId}/${alertId}/status`).set('seen');
+      setTimeout(() => { db.ref(`alerts/${chatId}/${alertId}`).remove(); }, 5000);
+      const overlay = $('alert-overlay');
+      if (overlay) overlay.style.display = 'none';
+
+      if (currentChatId !== chatId) {
+        const partnerId = getPartnerId(chatId, APP_USER);
+        if (APP_USER === 'saud') {
+          navigate('/chat/' + chatId);
+        } else {
+          navigate((BASE_PATH || '') + '/chat/' + (chatId === 'w-aseel' ? (APP_USER === 'w' ? 'aseel' : 'w') : 'saud'));
+        }
+      }
+    }
+
+    /* ==========================================================
        INIT
     ========================================================== */
     if ('serviceWorker' in navigator) {
@@ -4022,21 +4892,27 @@
     ensureMsgInputShim();
     route();
     window.addEventListener('popstate', route);
+    listenForIncomingCalls();
+    checkActiveAlerts();
 
-    // Re-confirm "seen" the moment the user returns to an open chat, so the
-    // sender's tick flips to double without waiting for a new message.
     document.addEventListener('visibilitychange', function() {
       if (!document.hidden) {
         markSeen();
+        markActive();
         if (currentChatId && currentUser && db) startPresence();
         resubscribePushIfNeeded();
+        checkActiveAlerts();
       } else {
         releaseMic();
         stopPresence();
       }
     });
-    window.addEventListener('focus', markSeen);
+    window.addEventListener('focus', () => { markSeen(); markActive(); });
+    setInterval(markActive, 60000);
     window.addEventListener('pagehide', function() {
       releaseMic();
       stopPresence();
+      if (isInCall && currentCallId && isCaller) {
+        db.ref(`calls/${currentCallId}/status`).set('ended');
+      }
     });
