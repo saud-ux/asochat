@@ -58,13 +58,13 @@
       saud: { name: 'سعود', color: '#6C5CE7' }
     };
 
+    const VAPID_PUBLIC_KEY = 'BOIMSoH3ZuHz_eL09w-2cOw7FSGyTTew3q3XlJsuwe4yBvnEbi1ee3mnwz3hOvS4rA_SigRsest_GbV_KgLZPV8';
+
     const FACETIME_MAP = {
       saud: 'saud.alhmad123@gmail.com',
-      aseel: 'saud.alhmad123@gmail.com',
-      w: ''  // ← ضع إيميل دبليو هنا
+      aseel: 'asssell1983@gmail.com',
+      w: ''
     };
-
-    const VAPID_PUBLIC_KEY = 'BOIMSoH3ZuHz_eL09w-2cOw7FSGyTTew3q3XlJsuwe4yBvnEbi1ee3mnwz3hOvS4rA_SigRsest_GbV_KgLZPV8';
 
     const AVATARS = {
       w: '<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><circle cx="24" cy="24" r="24" fill="#5B8FB9"/><text x="24" y="31" text-anchor="middle" fill="#fff" font-size="22" font-weight="700" font-family="Arial, sans-serif">W</text></svg>',
@@ -94,14 +94,12 @@
     let activeListeners = [];
     let totalUnread = { w: 0, aseel: 0, 'w-aseel': 0 };
     let chatCardState = {};
-    let partnerLastActive = {};
-    let lastActiveRefreshTimer = null;
-    let chatPartnerLastActiveTs = 0;
     let isFirstLoad = {};
     let pinnedToBottom = false;
     let audioCtx = null;
     let myMessages = [];
     let otherSeenTimestamp = 0;
+    let chatPartnerLastActiveTs = 0;
     let editingKey = null;
     let typingTimer = null;
     let typingCheckInterval = null;
@@ -382,17 +380,13 @@
         card.className = 'chat-card';
         card.id = `card-${partnerId}`;
         card.onclick = (e) => navigate(chatPath(partnerId), e);
-        const showLastActive = APP_USER === 'saud';
         card.innerHTML = `
           <div class="chat-avatar" style="background:${CONTACTS[partnerId].color}">
             ${AVATARS[partnerId]}
           </div>
           <div class="chat-info">
             <div class="chat-name">
-              <span class="chat-name-row">
-                <span>${CONTACTS[partnerId].name}</span>
-                ${showLastActive ? `<span class="chat-last-active" id="last-active-${partnerId}"></span>` : ''}
-              </span>
+              <span>${CONTACTS[partnerId].name}</span>
               <span class="chat-time" id="time-${chatId}"></span>
             </div>
             <div class="chat-preview-row">
@@ -439,26 +433,10 @@
         addListener(seenRef, 'value', snap => {
           cardState.partnerSeen = snap.val() || 0;
           renderStatus();
-          if (showLastActive) renderLastActive(partnerId);
         });
-
-        if (showLastActive) {
-          const laRef = db.ref(`users/${partnerId}/lastActive`);
-          addListener(laRef, 'value', snap => {
-            partnerLastActive[partnerId] = snap.val() || 0;
-            renderLastActive(partnerId);
-          });
-        }
 
         updateUnreadForChat(chatId, homeUser);
       });
-
-      if (APP_USER === 'saud') {
-        clearInterval(lastActiveRefreshTimer);
-        lastActiveRefreshTimer = setInterval(() => {
-          chatPartners.forEach(pid => renderLastActive(pid));
-        }, 30000);
-      }
 
       showNotifFirstTime();
       updateNotifToggle();
@@ -526,37 +504,15 @@
       });
     }
 
-    function renderLastActive(partnerId) {
-      const el = document.getElementById(`last-active-${partnerId}`);
-      if (!el) return;
-      const chatId = getChatId(homeUser, partnerId);
-      const fallback = (chatCardState[chatId] && chatCardState[chatId].partnerSeen) || 0;
-      const ts = Math.max(partnerLastActive[partnerId] || 0, fallback);
-      if (!ts) { el.textContent = ''; el.classList.remove('is-online'); return; }
-      const diff = Date.now() - ts;
-      if (diff < 90000) {
-        el.textContent = '● نشط الآن';
-        el.classList.add('is-online');
-      } else {
-        el.textContent = 'آخر نشاط ' + formatRelative(ts);
-        el.classList.remove('is-online');
-      }
-    }
-
     function msgPreview(msg) {
-      if (msg.deleted) {
-        if (APP_USER !== 'saud' || !msg.content) return '🚫 رسالة محذوفة';
-      }
       if (msg.type === 'image') return '📷 صورة';
       if (msg.type === 'gif') return '🎞️ GIF';
       if (msg.type === 'video') return '🎥 فيديو';
       if (msg.type === 'audio') return '🎤 رسالة صوتية';
       if (msg.type === 'game') return msg.game === 'rps' ? '🎮 حجرة ورقة مقص' : msg.game === 'c4' ? '🎮 أربعة في خط' : msg.game === 'guess' ? '🎮 خمّن الرقم' : msg.game === 'twenty' ? '🎮 الرقم ٢٠' : '🎮 لعبة إكس أو';
-      if (msg.type === 'alert') return '🚨 يبيك ضروري!';
+      if (msg.type === 'alert') return '🚨 تنبيه طارئ!';
       if (msg.type === 'system') return msg.content;
-      const prefix = msg.deleted ? '🚫 ' : '';
-      const body = msg.content.length > 50 ? msg.content.substring(0, 50) + '...' : msg.content;
-      return prefix + body;
+      return msg.content.length > 50 ? msg.content.substring(0, 50) + '...' : msg.content;
     }
 
     /* ==========================================================
@@ -590,7 +546,7 @@
         </div>
         <div class="header-actions">
           ${chatId !== 'w-aseel' ? `<button class="header-action-btn header-call-btn" onclick="startCall()" aria-label="اتصال"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/></svg></button>` : ''}
-          <button class="header-action-btn header-alert-btn" onclick="sendEmergencyAlert()" aria-label="يبيك ضروري"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></button>
+          <button class="header-action-btn header-alert-btn" onclick="sendEmergencyAlert()" aria-label="تنبيه طارئ"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></button>
           <button class="header-action-btn" onclick="goToGamesPage()" aria-label="لعبة"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" y1="11" x2="10" y2="11"/><line x1="8" y1="9" x2="8" y2="13"/><line x1="15" y1="12" x2="15.01" y2="12"/><line x1="18" y1="10" x2="18.01" y2="10"/><path d="M17.32 5H6.68a4 4 0 00-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 003 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 019.828 16h4.344a2 2 0 011.414.586L17 18c.5.5 1 1 2 1a3 3 0 003-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0017.32 5z"/></svg></button>
           <button class="header-action-btn" onclick="toggleSearch()" aria-label="بحث"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></button>
           <button class="header-action-btn" id="btn-theme" onclick="toggleTheme()" aria-label="الوضع">${isDark ? sunSvg : moonSvg}</button>
@@ -2245,15 +2201,8 @@
     ========================================================== */
     function renderMsgContent(el, msg, isMine) {
       if (msg.deleted) {
-        const canPeek = APP_USER === 'saud' && msg.content;
-        if (!canPeek) {
-          el.classList.remove('is-deleted-peek');
-          el.innerHTML = `<div class="msg-deleted">🚫 تم حذف هذه الرسالة</div><div class="msg-time">${formatTime(msg.timestamp)}</div>`;
-          return;
-        }
-        el.classList.add('is-deleted-peek');
-      } else {
-        el.classList.remove('is-deleted-peek');
+        el.innerHTML = `<div class="msg-deleted">🚫 تم حذف هذه الرسالة</div><div class="msg-time">${formatTime(msg.timestamp)}</div>`;
+        return;
       }
       let replyHtml = '';
       if (msg.replyTo) {
@@ -2301,10 +2250,9 @@
         reactionsHtml += '</div>';
       }
       const editedTag = msg.edited ? '<span class="msg-edited">(معدّلة)</span>' : '';
-      const deletedTag = msg.deleted ? '<span class="msg-deleted-tag">🚫 محذوفة</span>' : '';
-      const statusHtml = (isMine && !msg.deleted) ? `<span class="msg-status">${TICK_SINGLE}</span>` : '';
+      const statusHtml = isMine ? `<span class="msg-status">${TICK_SINGLE}</span>` : '';
       const savedTag = (el.dataset.key && isSaved(el.dataset.key)) ? '<span class="msg-saved-star">⭐</span>' : '';
-      el.innerHTML = replyHtml + content + reactionsHtml + `<div class="msg-time">${savedTag}${deletedTag}${editedTag}${statusHtml}${formatTime(msg.timestamp)}</div>`;
+      el.innerHTML = replyHtml + content + reactionsHtml + `<div class="msg-time">${savedTag}${editedTag}${statusHtml}${formatTime(msg.timestamp)}</div>`;
       const waveEl = el.querySelector('.audio-wave');
       if (waveEl) initWaveTouch(waveEl);
     }
@@ -3736,18 +3684,6 @@
         }, 320);
       }
 
-      // Preserve keyboard when the message input is focused: preventing the
-      // pointer-down default stops the tap from stealing focus, so the user
-      // can double-tap-heart a message without the keyboard closing.
-      const keepInputFocus = (e) => {
-        const inp = document.getElementById('msg-input');
-        if (inp && document.activeElement === inp && e.cancelable) {
-          e.preventDefault();
-        }
-      };
-      el.addEventListener('touchstart', keepInputFocus, { passive: false });
-      el.addEventListener('mousedown', keepInputFocus);
-
       el.addEventListener('touchend', (e) => {
         lastTouch = Date.now();
         if (taps >= 1) e.preventDefault(); // avoid double-tap zoom on repeats
@@ -4182,7 +4118,7 @@
       }
       let found = 0;
       allMsgElements.forEach(({ el, msg }) => {
-        if (msg.deleted && (APP_USER !== 'saud' || !msg.content)) { el.classList.remove('search-highlight', 'search-dim'); return; }
+        if (msg.deleted) { el.classList.remove('search-highlight', 'search-dim'); return; }
         const text = (msg.type === 'text' ? msg.content : '').toLowerCase();
         if (text.includes(query)) {
           el.classList.add('search-highlight');
@@ -4322,25 +4258,18 @@
 
     function playRingtone() {
       if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      let stopped = false;
-      let timeouts = [];
+      let stopped = false; let timeouts = [];
       function ring() {
         if (stopped) return;
         try {
-          const osc1 = audioCtx.createOscillator();
-          const g1 = audioCtx.createGain();
+          const osc1 = audioCtx.createOscillator(); const g1 = audioCtx.createGain();
           osc1.connect(g1); g1.connect(audioCtx.destination);
-          osc1.frequency.value = 440; osc1.type = 'sine';
-          g1.gain.value = 0.3;
+          osc1.frequency.value = 440; osc1.type = 'sine'; g1.gain.value = 0.3;
           osc1.start(); osc1.stop(audioCtx.currentTime + 0.4);
-
-          const osc2 = audioCtx.createOscillator();
-          const g2 = audioCtx.createGain();
+          const osc2 = audioCtx.createOscillator(); const g2 = audioCtx.createGain();
           osc2.connect(g2); g2.connect(audioCtx.destination);
-          osc2.frequency.value = 520; osc2.type = 'sine';
-          g2.gain.value = 0.3;
-          osc2.start(audioCtx.currentTime + 0.6);
-          osc2.stop(audioCtx.currentTime + 1.0);
+          osc2.frequency.value = 520; osc2.type = 'sine'; g2.gain.value = 0.3;
+          osc2.start(audioCtx.currentTime + 0.6); osc2.stop(audioCtx.currentTime + 1.0);
         } catch(e) {}
         timeouts.push(setTimeout(ring, 2500));
       }
@@ -4350,48 +4279,23 @@
 
     function playAlarmSound() {
       if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      let stopped = false;
-      let osc = null;
-      let interval = null;
-      let high = true;
+      let stopped = false; let osc = null; let interval = null; let high = true;
       try {
-        osc = audioCtx.createOscillator();
-        const g = audioCtx.createGain();
+        osc = audioCtx.createOscillator(); const g = audioCtx.createGain();
         osc.connect(g); g.connect(audioCtx.destination);
-        osc.type = 'square';
-        osc.frequency.value = 800;
-        g.gain.value = 0.25;
-        osc.start();
-        interval = setInterval(() => {
-          if (stopped) return;
-          high = !high;
-          osc.frequency.value = high ? 800 : 600;
-        }, 200);
+        osc.type = 'square'; osc.frequency.value = 800; g.gain.value = 0.25; osc.start();
+        interval = setInterval(() => { if (stopped) return; high = !high; osc.frequency.value = high ? 800 : 600; }, 200);
       } catch(e) {}
-      return function() {
-        stopped = true;
-        clearInterval(interval);
-        try { if (osc) osc.stop(); } catch(e) {}
-      };
+      return function() { stopped = true; clearInterval(interval); try { if (osc) osc.stop(); } catch(e) {} };
     }
 
     function sendCallPush(receiverId, callId) {
       const senderName = APP_USER === 'saud' ? 'سعود' : (CONTACTS[APP_USER] ? CONTACTS[APP_USER].name : APP_USER);
       const recipientUrl = receiverId === 'saud' ? `/chat/${getChatId('saud', APP_USER)}` : `/${receiverId}/chat/${APP_USER === 'saud' ? 'saud' : (APP_USER)}`;
-
       db.ref(`push-subscriptions/${receiverId}`).once('value', snap => {
-        const subs = snap.val();
-        if (!subs) return;
+        const subs = snap.val(); if (!subs) return;
         Object.entries(subs).forEach(([subKey, sub]) => {
-          const payload = {
-            subscription: sub,
-            title: 'مكالمة واردة',
-            body: senderName + ' يتصل بك',
-            url: recipientUrl,
-            type: 'call',
-            callId: callId
-          };
-          deliverPush(receiverId, subKey, payload, 0);
+          deliverPush(receiverId, subKey, { subscription: sub, title: 'مكالمة واردة', body: senderName + ' يتصل بك', url: recipientUrl, type: 'call', callId: callId }, 0);
         });
       });
     }
@@ -4401,292 +4305,128 @@
 
       const partnerId = getPartnerId(currentChatId, currentUser);
       const partnerEmail = FACETIME_MAP[partnerId];
-      const partnerName = CONTACTS[partnerId] ? CONTACTS[partnerId].name : partnerId;
 
       if (!partnerEmail) {
         showToastMsg('الاتصال غير متاح حالياً');
         return;
       }
 
-      // Confirmation dialog
-      const overlay = document.createElement('div');
-      overlay.className = 'confirm-overlay';
-      overlay.innerHTML = `
-        <div class="confirm-box">
-          <div style="font-size:18px;font-weight:700;margin-bottom:16px">اتصال بـ ${partnerName}؟</div>
-          <div style="font-size:13px;color:#999;margin-bottom:20px">سيتم فتح فيس تايم</div>
-          <div style="display:flex;gap:12px;justify-content:center">
-            <button class="confirm-btn confirm-cancel" id="call-cancel-btn">إلغاء</button>
-            <button class="confirm-btn confirm-ok" id="call-ok-btn">📞 اتصال</button>
-          </div>
-        </div>`;
-      document.body.appendChild(overlay);
-      overlay.querySelector('#call-cancel-btn').onclick = () => overlay.remove();
-      overlay.querySelector('#call-ok-btn').onclick = () => {
-        overlay.remove();
-        window.location.href = 'facetime-audio://' + partnerEmail;
-      };
+      const a = document.createElement('a');
+      a.href = 'facetime-audio://' + partnerEmail;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => a.remove(), 100);
     }
 
     function initCallAsCaller(callId, partnerId) {
       navigator.mediaDevices.getUserMedia({ audio: true, video: false }).then(stream => {
-        callStream = stream;
-        callPc = new RTCPeerConnection(RTC_CONFIG);
-
+        callStream = stream; callPc = new RTCPeerConnection(RTC_CONFIG);
         stream.getAudioTracks().forEach(track => callPc.addTrack(track, stream));
-
-        callPc.onicecandidate = e => {
-          if (e.candidate) {
-            db.ref(`calls/${callId}/callerCandidates`).push(e.candidate.toJSON());
-          }
-        };
-
-        callPc.ontrack = e => {
-          const audio = new Audio();
-          audio.srcObject = e.streams[0];
-          audio.play().catch(() => {});
-        };
-
-        callPc.createOffer().then(offer => {
-          return callPc.setLocalDescription(offer);
-        }).then(() => {
-          db.ref(`calls/${callId}/offer`).set({
-            sdp: callPc.localDescription.sdp,
-            type: callPc.localDescription.type
-          });
+        callPc.onicecandidate = e => { if (e.candidate) db.ref(`calls/${callId}/callerCandidates`).push(e.candidate.toJSON()); };
+        callPc.ontrack = e => { const audio = new Audio(); audio.srcObject = e.streams[0]; audio.play().catch(() => {}); };
+        callPc.createOffer().then(offer => callPc.setLocalDescription(offer)).then(() => {
+          db.ref(`calls/${callId}/offer`).set({ sdp: callPc.localDescription.sdp, type: callPc.localDescription.type });
         });
-
-        const ansRef = db.ref(`calls/${callId}/answer`);
-        ansRef.on('value', snap => {
-          const ans = snap.val();
-          if (ans && callPc && !callPc.currentRemoteDescription) {
-            callPc.setRemoteDescription(new RTCSessionDescription(ans));
-          }
-        });
-
-        const rcRef = db.ref(`calls/${callId}/receiverCandidates`);
-        rcRef.on('child_added', snap => {
-          const c = snap.val();
-          if (c && callPc) callPc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {});
-        });
-
+        db.ref(`calls/${callId}/answer`).on('value', snap => { const ans = snap.val(); if (ans && callPc && !callPc.currentRemoteDescription) callPc.setRemoteDescription(new RTCSessionDescription(ans)); });
+        db.ref(`calls/${callId}/receiverCandidates`).on('child_added', snap => { const c = snap.val(); if (c && callPc) callPc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {}); });
         callStatusRef = db.ref(`calls/${callId}/status`);
         callStatusRef.on('value', snap => {
           const st = snap.val();
-          if (st === 'answered') {
-            clearTimeout(callTimeoutTimer);
-            callStartTime = Date.now();
-            showInCallUI();
-          } else if (st === 'rejected') {
-            showToastMsg('رفض المكالمة');
-            cleanupCall();
-          } else if (st === 'ended' && isInCall) {
-            cleanupCall();
-          } else if (st === 'missed') {
-            cleanupCall();
-          }
+          if (st === 'answered') { clearTimeout(callTimeoutTimer); callStartTime = Date.now(); showInCallUI(); }
+          else if (st === 'rejected') { showToastMsg('رفض المكالمة'); cleanupCall(); }
+          else if (st === 'ended' && isInCall) { cleanupCall(); }
+          else if (st === 'missed') { cleanupCall(); }
         });
-      }).catch(() => {
-        showToastMsg('لا يمكن الوصول للميكروفون');
-        db.ref(`calls/${callId}/status`).set('ended');
-        cleanupCall();
-      });
+      }).catch(() => { showToastMsg('لا يمكن الوصول للميكروفون'); db.ref(`calls/${callId}/status`).set('ended'); cleanupCall(); });
     }
 
     function answerCall(callId) {
-      if (!callId) return;
-      isInCall = true;
-      isCaller = false;
-      currentCallId = callId;
-      isMuted = false;
-
+      if (!callId) return; isInCall = true; isCaller = false; currentCallId = callId; isMuted = false;
       if (callRingtoneStop) { callRingtoneStop(); callRingtoneStop = null; }
-
       db.ref(`calls/${callId}/status`).set('answered');
-
       db.ref(`calls/${callId}`).once('value', snap => {
-        const call = snap.val();
-        if (!call || !call.offer) { cleanupCall(); return; }
-
+        const call = snap.val(); if (!call || !call.offer) { cleanupCall(); return; }
         navigator.mediaDevices.getUserMedia({ audio: true, video: false }).then(stream => {
-          callStream = stream;
-          callPc = new RTCPeerConnection(RTC_CONFIG);
-
+          callStream = stream; callPc = new RTCPeerConnection(RTC_CONFIG);
           stream.getAudioTracks().forEach(track => callPc.addTrack(track, stream));
-
-          callPc.onicecandidate = e => {
-            if (e.candidate) {
-              db.ref(`calls/${callId}/receiverCandidates`).push(e.candidate.toJSON());
-            }
-          };
-
-          callPc.ontrack = e => {
-            const audio = new Audio();
-            audio.srcObject = e.streams[0];
-            audio.play().catch(() => {});
-          };
-
-          callPc.setRemoteDescription(new RTCSessionDescription(call.offer)).then(() => {
-            return callPc.createAnswer();
-          }).then(answer => {
-            return callPc.setLocalDescription(answer);
-          }).then(() => {
-            db.ref(`calls/${callId}/answer`).set({
-              sdp: callPc.localDescription.sdp,
-              type: callPc.localDescription.type
-            });
+          callPc.onicecandidate = e => { if (e.candidate) db.ref(`calls/${callId}/receiverCandidates`).push(e.candidate.toJSON()); };
+          callPc.ontrack = e => { const audio = new Audio(); audio.srcObject = e.streams[0]; audio.play().catch(() => {}); };
+          callPc.setRemoteDescription(new RTCSessionDescription(call.offer)).then(() => callPc.createAnswer()).then(answer => callPc.setLocalDescription(answer)).then(() => {
+            db.ref(`calls/${callId}/answer`).set({ sdp: callPc.localDescription.sdp, type: callPc.localDescription.type });
           });
-
-          const ccRef = db.ref(`calls/${callId}/callerCandidates`);
-          ccRef.on('child_added', snap => {
-            const c = snap.val();
-            if (c && callPc) callPc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {});
-          });
-
+          db.ref(`calls/${callId}/callerCandidates`).on('child_added', snap => { const c = snap.val(); if (c && callPc) callPc.addIceCandidate(new RTCIceCandidate(c)).catch(() => {}); });
           callStatusRef = db.ref(`calls/${callId}/status`);
-          callStatusRef.on('value', snap => {
-            const st = snap.val();
-            if (st === 'ended' && isInCall) {
-              cleanupCall();
-            }
-          });
-
-          callStartTime = Date.now();
-          showInCallUI();
-        }).catch(() => {
-          showToastMsg('لا يمكن الوصول للميكروفون');
-          db.ref(`calls/${callId}/status`).set('ended');
-          cleanupCall();
-        });
+          callStatusRef.on('value', snap => { if (snap.val() === 'ended' && isInCall) cleanupCall(); });
+          callStartTime = Date.now(); showInCallUI();
+        }).catch(() => { showToastMsg('لا يمكن الوصول للميكروفون'); db.ref(`calls/${callId}/status`).set('ended'); cleanupCall(); });
       });
     }
 
     function rejectCall(callId) {
       if (callRingtoneStop) { callRingtoneStop(); callRingtoneStop = null; }
       db.ref(`calls/${callId}/status`).set('rejected');
-      const overlay = $('call-overlay');
-      if (overlay) overlay.style.display = 'none';
+      const overlay = $('call-overlay'); if (overlay) overlay.style.display = 'none';
     }
 
-    function endCall() {
-      if (currentCallId) {
-        db.ref(`calls/${currentCallId}/status`).set('ended');
-      }
-      cleanupCall();
-    }
+    function endCall() { if (currentCallId) db.ref(`calls/${currentCallId}/status`).set('ended'); cleanupCall(); }
 
     function cleanupCall() {
-      clearTimeout(callTimeoutTimer);
-      clearInterval(callTimerInterval);
+      clearTimeout(callTimeoutTimer); clearInterval(callTimerInterval);
       if (callRingtoneStop) { callRingtoneStop(); callRingtoneStop = null; }
       if (callPc) { try { callPc.close(); } catch(e) {} callPc = null; }
       if (callStream) { callStream.getTracks().forEach(t => t.stop()); callStream = null; }
       if (callStatusRef) { callStatusRef.off(); callStatusRef = null; }
-
-      if (currentCallId) {
-        const cid = currentCallId;
-        setTimeout(() => { db.ref(`calls/${cid}`).remove(); }, 5000);
-      }
-
-      const overlay = $('call-overlay');
-      if (overlay) overlay.style.display = 'none';
-      const miniBar = $('call-mini-bar');
-      if (miniBar) miniBar.style.display = 'none';
-
-      currentCallId = null;
-      isInCall = false;
-      isCaller = false;
-      callStartTime = 0;
-      isMuted = false;
+      if (currentCallId) { const cid = currentCallId; setTimeout(() => { db.ref(`calls/${cid}`).remove(); }, 5000); }
+      const overlay = $('call-overlay'); if (overlay) overlay.style.display = 'none';
+      const miniBar = $('call-mini-bar'); if (miniBar) miniBar.style.display = 'none';
+      currentCallId = null; isInCall = false; isCaller = false; callStartTime = 0; isMuted = false;
     }
 
     function showCallingUI(name, color, avatar) {
-      const overlay = $('call-overlay');
-      if (!overlay) return;
-      overlay.innerHTML = `
-        <div class="call-avatar" style="background:${color}">${avatar}</div>
-        <div class="call-name">${name}</div>
-        <div class="call-status">جاري الاتصال...</div>
-        <div class="call-actions">
-          <button class="call-btn call-btn-end" onclick="endCall()">${ENDCALL_SVG}</button>
-        </div>`;
+      const overlay = $('call-overlay'); if (!overlay) return;
+      overlay.innerHTML = `<div class="call-avatar" style="background:${color}">${avatar}</div><div class="call-name">${name}</div><div class="call-status">جاري الاتصال...</div><div class="call-actions"><button class="call-btn call-btn-end" onclick="endCall()">${ENDCALL_SVG}</button></div>`;
       overlay.style.display = 'flex';
     }
 
     function showIncomingCallUI(callId, callerName, callerColor, callerAvatar) {
-      if (isInCall) {
-        db.ref(`calls/${callId}/status`).set('rejected');
-        return;
-      }
+      if (isInCall) { db.ref(`calls/${callId}/status`).set('rejected'); return; }
       callRingtoneStop = playRingtone();
-      const overlay = $('call-overlay');
-      if (!overlay) return;
-      overlay.innerHTML = `
-        <div class="call-avatar" style="background:${callerColor}">${callerAvatar}</div>
-        <div class="call-name">${callerName}</div>
-        <div class="call-status">مكالمة واردة...</div>
-        <div class="call-actions">
-          <button class="call-btn call-btn-answer" onclick="answerCall('${callId}')">${PHONE_SVG}</button>
-          <button class="call-btn call-btn-end" onclick="rejectCall('${callId}')">${ENDCALL_SVG}</button>
-        </div>`;
+      const overlay = $('call-overlay'); if (!overlay) return;
+      overlay.innerHTML = `<div class="call-avatar" style="background:${callerColor}">${callerAvatar}</div><div class="call-name">${callerName}</div><div class="call-status">مكالمة واردة...</div><div class="call-actions"><button class="call-btn call-btn-answer" onclick="answerCall('${callId}')">${PHONE_SVG}</button><button class="call-btn call-btn-end" onclick="rejectCall('${callId}')">${ENDCALL_SVG}</button></div>`;
       overlay.style.display = 'flex';
     }
 
     function showInCallUI() {
-      const overlay = $('call-overlay');
-      if (overlay) overlay.style.display = 'none';
-
+      const overlay = $('call-overlay'); if (overlay) overlay.style.display = 'none';
       if (!currentCallId) return;
-
       db.ref(`calls/${currentCallId}`).once('value', snap => {
-        const call = snap.val();
-        if (!call) return;
+        const call = snap.val(); if (!call) return;
         const partnerId = call.callerId === APP_USER ? call.receiverId : call.callerId;
         const partnerName = CONTACTS[partnerId] ? CONTACTS[partnerId].name : partnerId;
-
         const miniBar = $('call-mini-bar');
-        if (miniBar) {
-          miniBar.innerHTML = `${PHONE_SVG} <span id="call-timer-text">00:00</span> ${partnerName}`;
-          miniBar.style.display = 'flex';
-        }
-
-        clearInterval(callTimerInterval);
-        callTimerInterval = setInterval(updateCallTimer, 1000);
-        updateCallTimer();
-
-        overlay.innerHTML = `
-          <div class="call-name">${partnerName}</div>
-          <div class="call-timer" id="call-timer-overlay">00:00</div>
-          <div class="call-actions">
-            <button class="call-btn call-btn-mute${isMuted ? ' muted' : ''}" onclick="toggleMute()">${isMuted ? MICOFF_SVG : MIC_SVG}</button>
-            <button class="call-btn call-btn-end" onclick="endCall()">${ENDCALL_SVG}</button>
-          </div>`;
+        if (miniBar) { miniBar.innerHTML = `${PHONE_SVG} <span id="call-timer-text">00:00</span> ${partnerName}`; miniBar.style.display = 'flex'; }
+        clearInterval(callTimerInterval); callTimerInterval = setInterval(updateCallTimer, 1000); updateCallTimer();
+        overlay.innerHTML = `<div class="call-name">${partnerName}</div><div class="call-timer" id="call-timer-overlay">00:00</div><div class="call-actions"><button class="call-btn call-btn-mute${isMuted ? ' muted' : ''}" onclick="toggleMute()">${isMuted ? MICOFF_SVG : MIC_SVG}</button><button class="call-btn call-btn-end" onclick="endCall()">${ENDCALL_SVG}</button></div>`;
         overlay.style.display = 'none';
       });
     }
 
     function toggleMute() {
       isMuted = !isMuted;
-      if (callStream) {
-        callStream.getAudioTracks().forEach(t => { t.enabled = !isMuted; });
-      }
+      if (callStream) callStream.getAudioTracks().forEach(t => { t.enabled = !isMuted; });
       const muteBtn = document.querySelector('.call-btn-mute');
-      if (muteBtn) {
-        muteBtn.classList.toggle('muted', isMuted);
-        muteBtn.innerHTML = isMuted ? MICOFF_SVG : MIC_SVG;
-      }
+      if (muteBtn) { muteBtn.classList.toggle('muted', isMuted); muteBtn.innerHTML = isMuted ? MICOFF_SVG : MIC_SVG; }
     }
 
     function updateCallTimer() {
       if (!callStartTime) return;
       const elapsed = Math.floor((Date.now() - callStartTime) / 1000);
-      const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
-      const ss = String(elapsed % 60).padStart(2, '0');
-      const txt = mm + ':' + ss;
-      const timerEl = document.getElementById('call-timer-text');
-      if (timerEl) timerEl.textContent = txt;
-      const timerOv = document.getElementById('call-timer-overlay');
-      if (timerOv) timerOv.textContent = txt;
+      const txt = String(Math.floor(elapsed / 60)).padStart(2, '0') + ':' + String(elapsed % 60).padStart(2, '0');
+      const timerEl = document.getElementById('call-timer-text'); if (timerEl) timerEl.textContent = txt;
+      const timerOv = document.getElementById('call-timer-overlay'); if (timerOv) timerOv.textContent = txt;
     }
 
     function listenForIncomingCalls() {
@@ -4694,31 +4434,21 @@
       if (incomingCallRef) { incomingCallRef.off(); }
       incomingCallRef = db.ref('calls').orderByChild('receiverId').equalTo(APP_USER);
       incomingCallRef.on('child_added', snap => {
-        const call = snap.val();
-        if (!call || call.status !== 'ringing') return;
-        if (isInCall) {
-          db.ref(`calls/${snap.key}/status`).set('rejected');
-          return;
-        }
+        const call = snap.val(); if (!call || call.status !== 'ringing') return;
+        if (isInCall) { db.ref(`calls/${snap.key}/status`).set('rejected'); return; }
         const callerName = call.callerName || (CONTACTS[call.callerId] ? CONTACTS[call.callerId].name : call.callerId);
         const callerColor = CONTACTS[call.callerId] ? CONTACTS[call.callerId].color : '#5B8FB9';
-        const callerAvatar = AVATARS[call.callerId] || '';
-        showIncomingCallUI(snap.key, callerName, callerColor, callerAvatar);
+        showIncomingCallUI(snap.key, callerName, callerColor, AVATARS[call.callerId] || '');
       });
     }
 
     function showToastMsg(text) {
-      const toast = $('toast');
-      if (!toast) return;
+      const toast = $('toast'); if (!toast) return;
       toast.innerHTML = `<div class="toast-body"><div class="toast-text">${text}</div></div>`;
-      toast.className = 'toast';
-      toast.style.display = 'block';
+      toast.className = 'toast'; toast.style.display = 'block';
       requestAnimationFrame(() => toast.classList.add('visible'));
       clearTimeout(toastTimer);
-      toastTimer = setTimeout(() => {
-        toast.classList.remove('visible');
-        setTimeout(() => { toast.style.display = 'none'; }, 300);
-      }, 3000);
+      toastTimer = setTimeout(() => { toast.classList.remove('visible'); setTimeout(() => { toast.style.display = 'none'; }, 300); }, 3000);
     }
 
     /* ==========================================================
@@ -4726,70 +4456,34 @@
     ========================================================== */
     function sendEmergencyAlert() {
       if (alertDebounce || !currentChatId || !currentUser || !db) return;
-      alertDebounce = true;
-      setTimeout(() => { alertDebounce = false; }, 3000);
-
+      alertDebounce = true; setTimeout(() => { alertDebounce = false; }, 3000);
       const confirmEl = document.createElement('div');
       confirmEl.className = 'msg-actions-overlay visible';
       confirmEl.onclick = () => confirmEl.remove();
-      confirmEl.innerHTML = `<div class="msg-actions" onclick="event.stopPropagation()" style="text-align:center;padding:24px">
-        <div style="font-size:48px;margin-bottom:12px">🚨</div>
-        <div style="font-size:18px;font-weight:700;margin-bottom:16px">يبيك ضروري؟</div>
-        <div style="display:flex;gap:12px;justify-content:center">
-          <button id="alert-confirm-btn" style="background:#e74c3c;color:#fff;border:none;border-radius:12px;padding:12px 32px;font-size:16px;font-weight:700;cursor:pointer;font-family:inherit">إرسال</button>
-          <button onclick="this.closest('.msg-actions-overlay').remove()" style="background:#eee;color:#333;border:none;border-radius:12px;padding:12px 32px;font-size:16px;cursor:pointer;font-family:inherit">إلغاء</button>
-        </div>
-      </div>`;
+      confirmEl.innerHTML = `<div class="msg-actions" onclick="event.stopPropagation()" style="text-align:center;padding:24px"><div style="font-size:48px;margin-bottom:12px">🚨</div><div style="font-size:18px;font-weight:700;margin-bottom:16px">إرسال تنبيه طارئ؟</div><div style="display:flex;gap:12px;justify-content:center"><button id="alert-confirm-btn" style="background:#e74c3c;color:#fff;border:none;border-radius:12px;padding:12px 32px;font-size:16px;font-weight:700;cursor:pointer;font-family:inherit">إرسال</button><button onclick="this.closest('.msg-actions-overlay').remove()" style="background:#eee;color:#333;border:none;border-radius:12px;padding:12px 32px;font-size:16px;cursor:pointer;font-family:inherit">إلغاء</button></div></div>`;
       document.body.appendChild(confirmEl);
-
-      document.getElementById('alert-confirm-btn').onclick = () => {
-        confirmEl.remove();
-        doSendAlert();
-      };
+      document.getElementById('alert-confirm-btn').onclick = () => { confirmEl.remove(); doSendAlert(); };
     }
 
     function doSendAlert() {
       const chatId = currentChatId;
       const senderName = APP_USER === 'saud' ? 'سعود' : (CONTACTS[APP_USER] ? CONTACTS[APP_USER].name : APP_USER);
       const alertId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-
-      db.ref(`alerts/${chatId}/${alertId}`).set({
-        sender: APP_USER,
-        status: 'active',
-        timestamp: firebase.database.ServerValue.TIMESTAMP
-      });
-
-      db.ref(`chats/${chatId}/messages`).push({
-        sender: APP_USER,
-        type: 'alert',
-        content: '🚨 يبيك ضروري!',
-        timestamp: firebase.database.ServerValue.TIMESTAMP
-      });
-
+      db.ref(`alerts/${chatId}/${alertId}`).set({ sender: APP_USER, status: 'active', timestamp: firebase.database.ServerValue.TIMESTAMP });
+      db.ref(`chats/${chatId}/messages`).push({ sender: APP_USER, type: 'alert', content: '🚨 تنبيه طارئ!', timestamp: firebase.database.ServerValue.TIMESTAMP });
       if (chatId === 'w-aseel') {
-        const recipients = ['w', 'aseel'].filter(u => u !== APP_USER);
-        recipients.forEach(rid => sendAlertPush(rid, senderName));
+        ['w', 'aseel'].filter(u => u !== APP_USER).forEach(rid => sendAlertPush(rid, senderName));
       } else {
-        const partnerId = getPartnerId(chatId, currentUser);
-        sendAlertPush(partnerId, senderName);
+        sendAlertPush(getPartnerId(chatId, currentUser), senderName);
       }
     }
 
     function sendAlertPush(receiverId, senderName) {
       const recipientUrl = receiverId === 'saud' ? '/' : `/${receiverId}/`;
-
       db.ref(`push-subscriptions/${receiverId}`).once('value', snap => {
-        const subs = snap.val();
-        if (!subs) return;
+        const subs = snap.val(); if (!subs) return;
         Object.entries(subs).forEach(([subKey, sub]) => {
-          const payload = {
-            subscription: sub,
-            title: 'يبيك ضروري!',
-            body: senderName + ' يحتاجك ضروري!',
-            url: recipientUrl,
-            type: 'alert'
-          };
-          deliverPush(receiverId, subKey, payload, 0);
+          deliverPush(receiverId, subKey, { subscription: sub, title: 'تنبيه طارئ!', body: senderName + ' يحتاجك ضروري!', url: recipientUrl, type: 'alert' }, 0);
         });
       });
     }
@@ -4799,13 +4493,8 @@
       const chatIds = APP_USER === 'saud' ? ['w', 'aseel', 'w-aseel'] : (APP_USER === 'w' ? ['w', 'w-aseel'] : ['aseel', 'w-aseel']);
       chatIds.forEach(chatId => {
         db.ref(`alerts/${chatId}`).orderByChild('status').equalTo('active').once('value', snap => {
-          const alerts = snap.val();
-          if (!alerts) return;
-          Object.entries(alerts).forEach(([alertId, alert]) => {
-            if (alert.sender !== APP_USER) {
-              showAlertOverlay(chatId, alertId, alert.sender);
-            }
-          });
+          const alerts = snap.val(); if (!alerts) return;
+          Object.entries(alerts).forEach(([alertId, alert]) => { if (alert.sender !== APP_USER) showAlertOverlay(chatId, alertId, alert.sender); });
         });
       });
     }
@@ -4813,12 +4502,8 @@
     function showAlertOverlay(chatId, alertId, senderId) {
       const senderName = CONTACTS[senderId] ? CONTACTS[senderId].name : senderId;
       alertSoundStop = playAlarmSound();
-      const overlay = $('alert-overlay');
-      if (!overlay) return;
-      overlay.innerHTML = `
-        <div class="alert-icon">⚠️</div>
-        <div class="alert-text">${senderName} يبيك ضروري!</div>
-        <button class="alert-dismiss-btn" onclick="dismissAlert('${chatId}','${alertId}')">شفت</button>`;
+      const overlay = $('alert-overlay'); if (!overlay) return;
+      overlay.innerHTML = `<div class="alert-icon">⚠️</div><div class="alert-text">${senderName} يحتاجك!</div><button class="alert-dismiss-btn" onclick="dismissAlert('${chatId}','${alertId}')">شفت</button>`;
       overlay.style.display = 'flex';
     }
 
@@ -4826,16 +4511,10 @@
       if (alertSoundStop) { alertSoundStop(); alertSoundStop = null; }
       db.ref(`alerts/${chatId}/${alertId}/status`).set('seen');
       setTimeout(() => { db.ref(`alerts/${chatId}/${alertId}`).remove(); }, 5000);
-      const overlay = $('alert-overlay');
-      if (overlay) overlay.style.display = 'none';
-
+      const overlay = $('alert-overlay'); if (overlay) overlay.style.display = 'none';
       if (currentChatId !== chatId) {
-        const partnerId = getPartnerId(chatId, APP_USER);
-        if (APP_USER === 'saud') {
-          navigate('/chat/' + chatId);
-        } else {
-          navigate((BASE_PATH || '') + '/chat/' + (chatId === 'w-aseel' ? (APP_USER === 'w' ? 'aseel' : 'w') : 'saud'));
-        }
+        if (APP_USER === 'saud') { navigate('/chat/' + chatId); }
+        else { navigate((BASE_PATH || '') + '/chat/' + (chatId === 'w-aseel' ? (APP_USER === 'w' ? 'aseel' : 'w') : 'saud')); }
       }
     }
 
@@ -4870,10 +4549,12 @@
 
     ensureMsgInputShim();
     route();
-    window.addEventListener('popstate', route);
     listenForIncomingCalls();
     checkActiveAlerts();
+    window.addEventListener('popstate', route);
 
+    // Re-confirm "seen" the moment the user returns to an open chat, so the
+    // sender's tick flips to double without waiting for a new message.
     document.addEventListener('visibilitychange', function() {
       if (!document.hidden) {
         markSeen();
@@ -4891,7 +4572,7 @@
     window.addEventListener('pagehide', function() {
       releaseMic();
       stopPresence();
-      if (isInCall && currentCallId && isCaller) {
-        db.ref(`calls/${currentCallId}/status`).set('ended');
+      if (isInCall && isCaller && currentCallId) {
+        db.ref('calls/' + currentCallId + '/status').set('ended');
       }
     });
